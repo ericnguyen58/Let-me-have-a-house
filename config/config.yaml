@@ -1,0 +1,27 @@
+name: housing
+version: 0.0.1
+schema: v1
+
+# Path to each directory
+paths:
+  root: Let-me-have-a-house/
+  raw_data: data/raw/
+  processed_data: data/processed/
+  features_data: data/features/
+  reports: reports/
+  models: output/models/
+
+# Data Source and params
+sources:
+  guilford:
+    url: https://gcgis.guilfordcountync.gov/arcgis/rest/services/Tax/GCCadastral_FeatureToPointWGS84/FeatureServer/0/query
+    page_size: 2000
+  buncombe:
+    url: https://gis.buncombecounty.org/arcgis/rest/services/opendata/FeatureServer/1/query
+    page_size: 1000
+params:
+  where: "1=1"
+  outFields: "*"
+  f: json
+  returnGeometry: true
+  outSR: 4326
