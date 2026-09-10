@@ -11,9 +11,8 @@ left untouched by this module - only `properties_clean.csv` is written here.
 
 import json
 from datetime import datetime
-
+import geopandas as gpd
 import pandas as pd
-
 from src.utils.common import resolve_path, save_dataframe
 from src.utils.load_config import load_config
 
@@ -72,13 +71,19 @@ def load_arcgis_json(path):
 
 def load_mecklenburg(raw_path):
     return pd.read_csv(
-        raw_path + "Cama_Table_transformed.csv",
+        raw_path + "merklenburg/Cama_Table_transformed.csv",
         sep=";", encoding="utf-8-sig", decimal=",", low_memory=False,
     )
 
 
 def load_buncombe(raw_path):
     return load_arcgis_json(raw_path + "buncombe/buncombe.json")
+
+
+def load_buncombe_building(raw_path):
+    """Separate ArcGIS layer, building characteristics only (no owner/sale/land
+    fields) - joined onto the parcel layer in `bun_to_common` via PIN."""
+    return load_arcgis_json(raw_path + "buncombe_building/buncombe_building.json")
 
 
 def load_guilford(raw_path):
@@ -128,8 +133,31 @@ def meck_to_common(df):
     return out[COMMON_COLUMNS]
 
 
-def bun_to_common(df):
+def buncombe_building_rollup(df):
+    """The building layer is one row per building card (BldgNo); collapse to one row
+    per PIN, summing across cards (a parcel can carry more than one structure)."""
+    df = df.copy()
+    df["bathrooms"] = df["FullBath"] + 0.5 * df["HalfBath"]
+    return df.groupby("PIN", as_index=False).agg(
+        heated_area=("SqFeet", "sum"),
+        bedrooms=("Bedroom", "sum"),
+        bathrooms=("bathrooms", "sum"),
+        year_built=("YearBuilt", "min"),
+    )
+
+
+def bun_to_common(df, building_df):
     lat, lon = zip(*(polygon_centroid(g["rings"]) if g else (None, None) for g in df["_geometry"]))
+    df = df.copy()
+    df["latitude"], df["longitude"] = lat, lon
+
+    # PIN is the shared key, but may not share dtype across the two layers - join on
+    # a stringified copy rather than the raw column.
+    building = buncombe_building_rollup(building_df)
+    df["_pin_key"] = df["PIN"].astype(str)
+    building["_pin_key"] = building["PIN"].astype(str)
+    df = df.merge(building.drop(columns="PIN"), on="_pin_key", how="left")
+
     out = pd.DataFrame({
         "county": "Buncombe",
         "parcel_id": df["PIN"],
@@ -148,12 +176,12 @@ def bun_to_common(df):
         "acreage": df["Acreage"],
         "land_use_class": df["LandUse"].replace("", pd.NA).fillna(df["Class"]),
         "neighborhood_code": df["NeighborhoodCode"],
-        "year_built": pd.NA,     # not captured in this parcel/GIS layer
-        "heated_area": pd.NA,    # not captured in this parcel/GIS layer
-        "bedrooms": pd.NA,       # not captured in this parcel/GIS layer
-        "bathrooms": pd.NA,      # not captured in this parcel/GIS layer
-        "latitude": lat,
-        "longitude": lon,
+        "year_built": df["year_built"],    # from the building layer
+        "heated_area": df["heated_area"],  # from the building layer
+        "bedrooms": df["bedrooms"],        # from the building layer
+        "bathrooms": df["bathrooms"],      # from the building layer
+        "latitude": df["latitude"],
+        "longitude": df["longitude"],
     })
     return out[COMMON_COLUMNS]
 
@@ -196,6 +224,16 @@ def wake_rollup_to_parcel(df):
     ).reset_index()
     return first.merge(agg, on="REAL_ESTATE_ID")
 
+def nc_places_map(path,cfg):
+    poi = gpd.read_parquet(path)
+    df = pd.DataFrame({
+        "lon": poi.geometry.x,
+        "lat": poi.geometry.y,
+        "name": poi["names"].str["primary"],
+        "cat": poi["taxonomy"].str["primary"],
+    })
+    return df.to_csv(resolve_path(cfg,"processed_data")+"nc_places_map.csv")
+    pass
 
 def wake_to_common(df):
     parcels = wake_rollup_to_parcel(df)
@@ -231,7 +269,7 @@ def merge_all_counties(raw_path):
     return pd.concat(
         [
             meck_to_common(load_mecklenburg(raw_path)),
-            bun_to_common(load_buncombe(raw_path)),
+            bun_to_common(load_buncombe(raw_path), load_buncombe_building(raw_path)),
             gui_to_common(load_guilford(raw_path)),
             wake_to_common(load_wake(raw_path)),
         ],
@@ -275,11 +313,17 @@ def clean_properties(df):
     return df
 
 
+
+
+
+
+    pass
+
 def run():
     cfg = load_config()
     raw_path = resolve_path(cfg, "raw_data")
     processed_path = resolve_path(cfg, "processed_data")
-
+    nc_places_map(raw_path+ "NC parquet/nc_places.parquet",cfg)
     combined = merge_all_counties(raw_path)
     clean = clean_properties(combined)
     save_dataframe(clean, processed_path, "properties_clean.csv")

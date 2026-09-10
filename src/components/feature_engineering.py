@@ -7,14 +7,13 @@ revisiting once a real train/test split exists (see training.py, not yet built).
 """
 
 from datetime import datetime
-
 import numpy as np
 
 from src.utils.common import read_dataframe, resolve_path, save_dataframe
 from src.utils.load_config import load_config
 
 CURRENT_YEAR = datetime.now().year
-
+EARTH_RADIUS = 3959 #miles
 
 def add_property_age(df):
     df["property_age"] = CURRENT_YEAR - df["year_built"]
@@ -27,6 +26,11 @@ def add_price_per_sqft(df):
     df.loc[valid, "price_per_sqft"] = df.loc[valid, "sale_price"] / df.loc[valid, "heated_area"]
     return df
 
+def accessibility_score(house_df, nc_places_df):
+    house_df = house_df[['latitude','longitude']].dropna()
+    nc_places_df = nc_places_df[['lat','lon']].dropna()
+
+    accessibility_score = ()
 
 def add_neighborhood_aggregates(df):
     group_cols = ["county", "neighborhood_code"]
