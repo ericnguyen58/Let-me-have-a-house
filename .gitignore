@@ -12,6 +12,7 @@ venv/
 .ipynb_checkpoints/
 *.log
 
+PLAN.md
 data/*
 output/*
 reports/*

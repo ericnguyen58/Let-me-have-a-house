@@ -19,9 +19,16 @@ sources:
   buncombe:
     url: https://gis.buncombecounty.org/arcgis/rest/services/opendata/FeatureServer/1/query
     page_size: 1000
+  buncombe_building:
+    url: https://services6.arcgis.com/VLA0ImJ33zhtGEaP/ArcGIS/rest/services/Real%20Estate%20Appraisal%20Residential%20Building%202025/FeatureServer/0/query
+    page_size: 1000
 params:
   where: "1=1"
   outFields: "*"
   f: json
   returnGeometry: true
   outSR: 4326
+
+# hospital, park, everything else
+nc_places:
+  bbox: "-84.5,33.7,-75.4,36.6"
