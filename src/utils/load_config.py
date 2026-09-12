@@ -1,5 +1,4 @@
 import pathlib
-import pathlib as path
 import yaml
 
 PROJECT_PATH = pathlib.Path(__file__).resolve().parents[2]

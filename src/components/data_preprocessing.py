@@ -48,6 +48,7 @@ ARMS_LENGTH_MIN_PRICE = 10_000
 ARMS_LENGTH_MAX_PRICE = 20_000_000
 ARMS_LENGTH_LOOKBACK_YEARS = 10
 
+
 # Buncombe's ArcGIS export carries these as JSON strings rather than numbers, so after
 # concatenation with the other counties these columns end up as mixed-type `object`
 # columns unless coerced.
@@ -232,8 +233,8 @@ def nc_places_map(path,cfg):
         "name": poi["names"].str["primary"],
         "cat": poi["taxonomy"].str["primary"],
     })
-    return df.to_csv(resolve_path(cfg,"processed_data")+"nc_places_map.csv")
-    pass
+    return df.to_csv(resolve_path(cfg,"processed_data")+"nc_places_map.csv", index=False)
+
 
 def wake_to_common(df):
     parcels = wake_rollup_to_parcel(df)
