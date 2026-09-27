@@ -1,13 +1,14 @@
 [project]
 name = "let-me-have-a-house"
 version = "0.1.0"
-description = "Add your description here"
+description = "Estimate Mecklenburg County home assessed values from house, area and accessibility features"
 readme = "README.md"
 authors = [
     { name = "ericnguyen58", email = "ngdtoan58@gmail.com" }
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "anthropic>=1.8.0",
     "fastapi>=0.141.1",
     "geopandas>=1.1.4",
     "ipykernel>=7.3.0",
@@ -17,10 +18,12 @@ dependencies = [
     "overturemaps>=1.0.2",
     "pandas",
     "path>=17.1.1",
+    "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
     "scikit-learn>=1.9.0",
     "seaborn>=0.13.2",
+    "xgboost>=3.4.1",
 ]
 
 [tool.uv]
