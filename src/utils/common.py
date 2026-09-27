@@ -19,4 +19,4 @@ def save_dataframe(df, path, filename):
 
 def read_dataframe(path, filename, **kwargs):
     """Read `path/filename` as csv. Extra kwargs are forwarded to pd.read_csv."""
-    return pd.read_csv(os.path.join(path, filename), **kwargs)
+    return pd.read_csv(os.path.join(path, filename),low_memory=False, **kwargs)

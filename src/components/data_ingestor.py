@@ -13,7 +13,12 @@ class data_ingestor:
         self.RAW_PATH = self.cfg['paths']['raw_data']
 
     def ingest(self):
-        for source in self.cfg['sources']:
+        """Download the Overture places file (skipped if already present), then page
+        through each ArcGIS source in config `sources` (none are active while the
+        project is Mecklenburg-only - that county's CSV is placed by hand)."""
+        nc_places = self.ROOT_PATH + self.RAW_PATH + 'NC parquet/nc_places.parquet'
+        self.fetch_places(nc_places, self.cfg['nc_places']['bbox'])
+        for source in self.cfg.get('sources') or {}:
             pth = self.ROOT_PATH + self.RAW_PATH + source
             os.makedirs(pth, exist_ok=True)
             payload = self._fetch_all(source)
@@ -36,20 +41,15 @@ class data_ingestor:
         ], check=True)
         return _
 
-        pass
     def _fetch_all(self, source):
         """Page through an ArcGIS FeatureServer `query` endpoint (resultOffset/resultRecordCount)
         until the full result set has been retrieved, and return a single combined payload."""
-        nc_places = self.ROOT_PATH + self.RAW_PATH + '/NC parquet/nc_places.parquet'
-        bbox =self.cfg['nc_places']['bbox']
         source_cfg = self.cfg['sources'][source]
         page_size = source_cfg['page_size']
         params = {**self.cfg['params'], "resultRecordCount": page_size}
         features = []
         meta = None
         offset = 0
-
-        self.fetch_places(nc_places,bbox)
 
         while True:
             r = requests.get(source_cfg['url'], params={**params, "resultOffset": offset}, timeout=60)

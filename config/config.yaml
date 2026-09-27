@@ -11,17 +11,18 @@ paths:
   reports: reports/
   models: output/models/
 
-# Data Source and params
-sources:
-  guilford:
-    url: https://gcgis.guilfordcountync.gov/arcgis/rest/services/Tax/GCCadastral_FeatureToPointWGS84/FeatureServer/0/query
-    page_size: 2000
-  buncombe:
-    url: https://gis.buncombecounty.org/arcgis/rest/services/opendata/FeatureServer/1/query
-    page_size: 1000
-  buncombe_building:
-    url: https://services6.arcgis.com/VLA0ImJ33zhtGEaP/ArcGIS/rest/services/Real%20Estate%20Appraisal%20Residential%20Building%202025/FeatureServer/0/query
-    page_size: 1000
+# ArcGIS sources for the other counties, used by data_ingestor.ingest(). Commented out
+# while the project is Mecklenburg-only (that county's CSV is placed by hand).
+# sources:
+#   guilford:
+#     url: https://gcgis.guilfordcountync.gov/arcgis/rest/services/Tax/GCCadastral_FeatureToPointWGS84/FeatureServer/0/query
+#     page_size: 2000
+#   buncombe:
+#     url: https://gis.buncombecounty.org/arcgis/rest/services/opendata/FeatureServer/1/query
+#     page_size: 1000
+#   buncombe_building:
+#     url: https://services6.arcgis.com/VLA0ImJ33zhtGEaP/ArcGIS/rest/services/Real%20Estate%20Appraisal%20Residential%20Building%202025/FeatureServer/0/query
+#     page_size: 1000
 params:
   where: "1=1"
   outFields: "*"
@@ -32,3 +33,12 @@ params:
 # hospital, park, everything else
 nc_places:
   bbox: "-84.5,33.7,-75.4,36.6"
+
+# training.py: models per feature set (see training.FEATURE_SETS / MODEL_TYPES),
+# hyperparameter-tuned via RandomizedSearchCV (search_iter candidates x cv_folds folds)
+training:
+  target: total_value
+  test_size: 0.2
+  random_state: 42
+  search_iter: 15
+  cv_folds: 3

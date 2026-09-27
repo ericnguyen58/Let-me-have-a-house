@@ -1,11 +1,33 @@
 """Add modeling features on top of the cleaned properties table.
 
 Reads data/processed/properties_clean.csv and adds property_age, price_per_sqft,
-per-neighborhood price aggregates, and an accessibility score (proximity to
-groceries/parks/schools/etc, see ACCESSIBILITY_CATEGORIES). The neighborhood
-aggregates are computed on the full clean dataset rather than a training-only
-split, which is a mild leakage caveat worth revisiting once a real train/test
-split exists (see training.py, not yet built).
+per-neighborhood price aggregates, and accessibility features in four groups:
+
+- education: miles to the nearest school (school quality to be added once CMS
+  attendance zones and NC report card grades are sourced)
+- health care: share of places within COUNT_RADIUS_MILES that are health care
+- emergency: miles to the nearest fire station, police station, and emergency
+  department (see label_emergency_departments)
+- activity: share of places within COUNT_RADIUS_MILES that are activities
+  (parks, theaters, gyms, ...)
+
+plus places_count, the number of places of any kind within COUNT_RADIUS_MILES.
+Health care and activity are shares of places_count rather than raw counts: raw
+counts both mostly measured how built-up the area is (correlation 0.91), so
+places_count carries that on its own and the shares say what kind of places are
+nearby (correlation -0.27).
+
+Distances are raw miles rather than decay scores: the tree models split on
+thresholds, so any monotonic transform of distance gives them the same splits.
+
+price_momentum is the yearly growth rate of price_per_sqft in the house's
+neighborhood over MOMENTUM_START to MOMENTUM_END (the three years before the
+January 2023 assessment the target comes from), falling back to the house's area
+where the neighborhood has too few sales - a measure of where buyers expected
+prices to go, as far as recorded sales show it.
+
+The neighborhood aggregates and price_momentum here are computed on every row;
+training.py recomputes both from its training rows only.
 """
 
 from datetime import datetime
@@ -18,25 +40,62 @@ from src.utils.load_config import load_config
 CURRENT_YEAR = datetime.now().year
 EARTH_RADIUS = 3959 #miles
 
-# Curated "surrounding places" categories for the accessibility score (out of the
-# ~1765 raw `cat` values in nc_places_map.csv). weight = how much the category
-# matters to housing accessibility; tau_miles = distance-decay range, i.e. the
-# score falls to ~37% at tau_miles and ~5% at 3x tau_miles. `cats` lets one
-# score bucket pool several raw categories (e.g. all school levels); it
-# defaults to the bucket's own name when omitted.
-ACCESSIBILITY_CATEGORIES = {
-    "grocery_store": {"weight": 1.0, "tau_miles": 1.0},
-    "park": {"weight": 0.8, "tau_miles": 0.5},
-    "school": {
-        "weight": 0.8,
-        "tau_miles": 1.0,
-        "cats": ["school", "elementary_school", "middle_school", "high_school", "private_school"],
-    },
-    "hospital": {"weight": 0.7, "tau_miles": 3.0},
-    "pharmacy": {"weight": 0.6, "tau_miles": 1.5},
-    "restaurant": {"weight": 0.5, "tau_miles": 1.0},
-    "public_transit_facility_or_service": {"weight": 0.5, "tau_miles": 1.0},
+# price_momentum window: the three years before the January 1, 2023 revaluation that
+# total_value comes from, so the feature carries nothing from after the target date.
+MOMENTUM_START = pd.Timestamp("2020-01-01")
+MOMENTUM_END = pd.Timestamp("2023-01-01")
+# Below this many sales in the window a neighborhood's trend is too noisy, and the
+# house's area trend is used instead (446 of ~2,900 neighborhoods clear it, ~46% of houses).
+MIN_MOMENTUM_SALES = 30
+
+# Health care and activity are counted within this radius; 5 miles still separates
+# dense and sparse parts of the county (e.g. ~620 activity places around Uptown vs ~70
+# around Mint Hill), where a 20-mile circle covers most of the county for every house.
+COUNT_RADIUS_MILES = 5
+# Nearest-distance features are capped here, so a house with nothing of a kind nearby
+# gets the cap rather than an arbitrarily large distance.
+MAX_DISTANCE_MILES = 20
+
+# Overture's emergency_department category is mostly individual ER doctors, and real
+# emergency departments are filed under many categories (obstetrics_and_gynecology,
+# travel_service, outpatient_care_facility, none at all), so they're found by name
+# instead: anything named like an emergency department/room, plus acute-care hospitals
+# with an ED whose Overture name doesn't say so.
+ED_NAME_PATTERN = r"(?i:emergency department|emergency room)|\b(?:ER|ED)$"
+ED_NAME_EXCLUDED_CATS = ["veterinarian", "emergency_pet_hospital", "dental_clinic"]
+ED_HOSPITAL_NAMES = [
+    "Atrium Health University City", "Atrium Health Pineville", "Carolinas Medical Center Mercy",
+    "Novant Health Presbyterian Medical Center", "Novant Health Matthews Medical Center",
+    "Novant Health Ballantyne Medical Center",
+    # Overture has no point named for these two hospitals, so a building on each campus stands in
+    "Novant Huntersville L&D Unit",  # Novant Health Huntersville Medical Center
+    "Novant Health Heart & Vascular Institute - Mint Hill",  # Novant Health Mint Hill Medical Center
+    "Atrium Health Union", "Atrium Health Union West", "Atrium Health Cabarrus",
+    "Atrium Health Kannapolis", "Lake Norman Regional Medical Center",
+]
+
+EDUCATION_CATS = ["school", "elementary_school", "middle_school", "high_school", "private_school"]
+HEALTH_CARE_CATS = [
+    "health_care", "doctors_office", "family_practice", "internal_medicine", "pediatric_clinic",
+    "public_health_clinic", "urgent_care_clinic", "outpatient_care_facility", "dental_clinic",
+    "general_dentistry", "pharmacy",
+    "hospital",  # emergency departments are relabeled first, so these are hospitals without one
+]
+EMERGENCY_CATS = {
+    "fire": ["fire_station"],
+    "police": ["police_station"],
+    # Ambulances aren't included: Medic moves them between posts during the day, and
+    # Overture's ambulance_or_ems_service places are mostly clinicians and businesses.
+    "medical": ["emergency_department_verified"],
 }
+ACTIVITY_CATS = [
+    "park", "playground", "dog_park", "hiking_trail", "nature_reserve", "botanical_garden",
+    "golf_course", "gym", "sport_or_fitness_facility", "skate_park", "trampoline_park",
+    "ice_skating_rink", "bowling_alley", "movie_theater", "theatre_venue", "music_venue",
+    "stadium_arena", "amusement_park", "arts_and_entertainment", "museum", "art_museum",
+    "history_museum", "science_museum", "childrens_museum", "zoo", "aquarium", "library",
+    "community_center", "shopping_mall",
+]
 
 def add_property_age(df):
     df["property_age"] = CURRENT_YEAR - df["year_built"]
@@ -58,43 +117,53 @@ def nearest_distance(house_lat, house_lon, place_lat, place_lon):
     return dist_rad[:, 0] * EARTH_RADIUS, idx[:, 0]
 
 
-def category_accessibility_score(house_df, nc_places_df, cats, tau_miles):
-    """exp(-distance/tau) closeness (0-1) to the nearest place in `cats`, indexed like house_df.
+def label_emergency_departments(places):
+    """Relabel real emergency departments (by name, see ED_NAME_PATTERN and
+    ED_HOSPITAL_NAMES) as emergency_department_verified. Leftover emergency_department
+    places, which are mostly individual doctors, stay out of every group."""
+    places = places.dropna(subset=["lat", "lon"]).copy()
+    named_ed = places["name"].str.contains(ED_NAME_PATTERN, na=False) & ~places["cat"].isin(ED_NAME_EXCLUDED_CATS)
+    places.loc[named_ed | places["name"].isin(ED_HOSPITAL_NAMES), "cat"] = "emergency_department_verified"
+    return places
 
-    NaN for houses missing coordinates (dropped before the nearest-neighbor query,
-    reindexed back afterwards) rather than imputed.
-    """
-    places = nc_places_df.loc[nc_places_df["cat"].isin(cats), ["lat", "lon"]].dropna()
+
+def nearest_place_miles(house_df, places, cats):
+    """Miles to the nearest place in `cats`, capped at MAX_DISTANCE_MILES. NaN for houses
+    missing coordinates."""
+    places = places[places["cat"].isin(cats)]
     houses = house_df[["latitude", "longitude"]].dropna()
-    if places.empty or houses.empty:
-        return pd.Series(np.nan, index=house_df.index)
-
-    distance_miles, _ = nearest_distance(
-        houses["latitude"], houses["longitude"], places["lat"], places["lon"]
-    )
-    score = pd.Series(np.exp(-distance_miles / tau_miles), index=houses.index)
-    return score.reindex(house_df.index)
+    distance, _ = nearest_distance(houses["latitude"], houses["longitude"], places["lat"], places["lon"])
+    return pd.Series(np.minimum(distance, MAX_DISTANCE_MILES), index=houses.index).reindex(house_df.index)
 
 
-def accessibility_score(house_df, nc_places_df, categories=None):
-    """Weighted-average closeness (0-1) to a curated set of nearby place categories.
+def places_within_miles(house_df, places, radius_miles, cats=None):
+    """Number of places in `cats` (default: any category) within radius_miles of each
+    house. NaN for houses missing coordinates."""
+    places = places[places["cat"].isin(cats)] if cats else places.dropna(subset=["cat"])
+    houses = house_df[["latitude", "longitude"]].dropna()
+    tree = BallTree(np.radians(places[["lat", "lon"]]), metric="haversine")
+    counts = tree.query_radius(np.radians(houses), r=radius_miles / EARTH_RADIUS, count_only=True)
+    return pd.Series(counts, index=houses.index).reindex(house_df.index)
 
-    NaN for houses missing coordinates; ignored (not imputed) otherwise.
-    """
-    categories = categories or ACCESSIBILITY_CATEGORIES
-    scores = pd.DataFrame({
-        name: category_accessibility_score(house_df, nc_places_df, cfg.get("cats", [name]), cfg["tau_miles"])
-        for name, cfg in categories.items()
-    })
-    weights = pd.Series({name: cfg["weight"] for name, cfg in categories.items()})
-    # skipna=False: a house missing coordinates is NaN in every category column,
-    # so the row should sum to NaN rather than silently treating them as 0.
-    return scores.mul(weights).sum(axis=1, skipna=False) / weights.sum()
 
-def add_neighborhood_aggregates(df):
+def add_accessibility(df, nc_places_df):
+    places = label_emergency_departments(nc_places_df)
+    df["education_nearest_miles"] = nearest_place_miles(df, places, EDUCATION_CATS)
+    df["places_count"] = places_within_miles(df, places, COUNT_RADIUS_MILES)
+    df["health_care_share"] = places_within_miles(df, places, COUNT_RADIUS_MILES, HEALTH_CARE_CATS) / df["places_count"]
+    for name, cats in EMERGENCY_CATS.items():
+        df[f"emergency_{name}_miles"] = nearest_place_miles(df, places, cats)
+    df["activity_share"] = places_within_miles(df, places, COUNT_RADIUS_MILES, ACTIVITY_CATS) / df["places_count"]
+    return df
+
+def add_neighborhood_aggregates(df, source=None):
+    """Median price_per_sqft and sale count per neighborhood, computed from `source`
+    rows (default: df itself) - training.py passes its training rows so test rows'
+    sales never feed their own features."""
+    source = df if source is None else source
     group_cols = ["county", "neighborhood_code"]
     agg = (
-        df.loc[df["price_per_sqft"].notna()]
+        source.loc[source["price_per_sqft"].notna()]
         .groupby(group_cols)["price_per_sqft"]
         .agg(neighborhood_median_price_per_sqft="median", neighborhood_sale_count="count")
         .reset_index()
@@ -102,11 +171,48 @@ def add_neighborhood_aggregates(df):
     return df.merge(agg, on=group_cols, how="left")
 
 
+def _growth_by(sales, keys):
+    """Yearly growth rate of price_per_sqft per group - exp of the least-squares slope of
+    log(price_per_sqft) against time in years, minus 1 - and the number of sales."""
+    sales = sales.assign(xy=sales["t"] * sales["log_ppsf"], xx=sales["t"] ** 2)
+    groups = sales.groupby(keys)
+    m = groups[["t", "log_ppsf", "xy", "xx"]].mean()
+    slope = (m["xy"] - m["t"] * m["log_ppsf"]) / (m["xx"] - m["t"] ** 2)
+    return pd.DataFrame({"growth": np.expm1(slope), "sales": groups.size()}).reset_index()
+
+
+def add_price_momentum(df, source=None):
+    """price_momentum: neighborhood growth rate where it has at least MIN_MOMENTUM_SALES
+    sales in the window, else the area's. Computed from `source` rows (default: df
+    itself), like add_neighborhood_aggregates.
+
+    Each house only carries its most recent sale, so a neighborhood's sales in the
+    window are different houses each year - the trend partly reflects which houses
+    happened to sell, not only price change."""
+    source = df if source is None else source
+    sale_date = pd.to_datetime(source["sale_date"], format="mixed")
+    in_window = source["price_per_sqft"].notna() & (sale_date >= MOMENTUM_START) & (sale_date < MOMENTUM_END)
+    sales = pd.DataFrame({
+        "county": source["county"], "neighborhood_code": source["neighborhood_code"], "area": source["area"],
+        "t": (sale_date - MOMENTUM_START).dt.days / 365.25,
+        "log_ppsf": np.log(source["price_per_sqft"]),
+    })[in_window]
+
+    nbhd = _growth_by(sales, ["county", "neighborhood_code"])
+    area = _growth_by(sales, ["area"])
+    out = df.merge(nbhd, on=["county", "neighborhood_code"], how="left").merge(
+        area[["area", "growth"]].rename(columns={"growth": "area_growth"}), on="area", how="left",
+    )
+    out["price_momentum"] = out["growth"].where(out["sales"] >= MIN_MOMENTUM_SALES, out["area_growth"])
+    return out.drop(columns=["growth", "sales", "area_growth"])
+
+
 def build_features(df, nc_places_df):
     df = add_property_age(df)
     df = add_price_per_sqft(df)
     df = add_neighborhood_aggregates(df)
-    df["access"] = accessibility_score(df, nc_places_df)
+    df = add_price_momentum(df)
+    df = add_accessibility(df, nc_places_df)
     return df
 
 
@@ -115,7 +221,7 @@ def run():
     processed_path = resolve_path(cfg, "processed_data")
     features_path = resolve_path(cfg, "features_data")
 
-    clean = read_dataframe(processed_path, "properties_clean.csv", parse_dates=["sale_date"], low_memory=False)
+    clean = read_dataframe(processed_path, "properties_clean.csv", parse_dates=["sale_date"])
     clean["arms_length_sale"] = clean["arms_length_sale"].astype(bool)
     places = read_dataframe(processed_path, "nc_places_map.csv")
 
@@ -126,8 +232,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-    # places = pd.read_csv('/Users/a70411/Let-me-have-a-house/data/processed/nc_places_map.csv')
-    # houses = pd.read_csv('/Users/a70411/Let-me-have-a-house/data/features/properties_features.csv')
-    #
-    # print(accessibility_score(houses, places).describe())
-
