@@ -62,7 +62,7 @@ as described below.
 | 5. Evaluation | `src/components/evaluating.py` | 10-house validation implemented. Other planned tests not yet complete. |
 | 5b. Retrain best model | `src/components/finetune.py` | Implemented |
 | 6. Prediction | `src/components/predict.py` | Implemented |
-| 7. Search (similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
+| 7. Search (property lookup, area stats, similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
 | 8. Assistant (Claude tool use) | `src/components/assistant.py` | Implemented |
 | Pipeline orchestration | `src/pipeline/` | Not yet complete (empty package) |
 | API | `api/main.py` | Not yet complete (empty file) |
@@ -139,6 +139,7 @@ uv run python -m src.components.finetune             # retrain the best model on
 uv run python -m src.components.predict              # example estimates
 uv run python -m src.components.search               # example comps and deals
 uv run python -m src.components.assistant "your question here"
+uv run python -m src.components.assistant             # multi-turn chat
 ```
 
 Each stage reads its inputs from the previous stage's output files, so they
@@ -583,8 +584,30 @@ Estimates `total_value` for one house.
 
 ### `search.py`
 
-Two lookup functions that reuse the trained preprocessors and models. Both
-cover all of Mecklenburg.
+Lookup functions over the feature table. `find_similar_houses` and
+`find_deals` also reuse the trained preprocessors and models. All cover all of
+Mecklenburg.
+
+- `lookup_property(address=None, parcel_id=None, limit=5)`: returns the county
+  record for a property: address, neighborhood code, total, land and building
+  value, last sale, and every model feature. The result can be passed straight
+  into `predict_total_value` or `find_similar_houses`, so no feature has to be
+  filled with a typical value.
+  - The county stores street names abbreviated (`ALTONDALE AV`), so an address
+    matches on its house number plus the first word of the street name. "Ave"
+    and "Avenue" both match.
+  - If a town name from the matches appears in the address, only that town's
+    matches are kept.
+  - It can return several rows (the same street name in different towns, or
+    several units at one number) or none.
+  - `parcel_id` is compared as a number, so the county's 8-digit form with
+    leading zeros (`00733316`) also works.
+  - Missing values are returned as `None`, not `NaN`.
+- `area_stats(area=None)`: one row per area (or only the given area) with the
+  house count, median `total_value`, heated area, year built,
+  `price_momentum`, distance to the nearest school and emergency department,
+  places count, and median $/sq ft of arms-length sales. An unknown area
+  raises `ValueError`.
 
 - `find_similar_houses(features, k=5, feature_set="with_neighborhood_price")`:
   returns the `k` houses closest to the given features, measured after
@@ -622,8 +645,11 @@ cover all of Mecklenburg.
 Lets a user ask questions in plain language. Claude decides which functions
 to call and writes the answer from their results.
 
-- Three tools are registered with the `@beta_tool` decorator from the
-  Anthropic SDK:
+- Five tools are registered with the `@beta_tool` decorator from the
+  Anthropic SDK, listed in `TOOLS`:
+  - `lookup_property`: takes an `address` or `parcel_id`, and calls
+    `search.lookup_property`.
+  - `area_stats`: takes an optional `area`, and calls `search.area_stats`.
   - `predict_total_value`: takes any of the 20 features plus `feature_set`,
     and calls `predict.predict_total_value` with the default random forest.
   - `find_similar_houses`: takes the same features plus `feature_set` and `k`,
@@ -640,20 +666,30 @@ to call and writes the answer from their results.
   - the estimate is the 2023 assessed value, a reference point rather than a
     market price,
   - the list of areas,
-  - to ask for the house's area and location when missing, since estimates are
-    much weaker without them,
+  - when given an address or parcel ID, to call `lookup_property` first and
+    pass its feature values into the estimate and comps tools, and to ask
+    which house was meant if there are several matches,
+  - for a house described without an address, to use `area_stats` for typical
+    values or ask for the address, since estimates are much weaker without the
+    house's location,
   - to only give dollar amounts that came from a tool,
   - to mention the renovation and assessed-versus-market caveats whenever it
     shows deals.
-- `ask(question)`: runs the Anthropic SDK tool runner, which repeats the
+- `_run(messages)`: runs the Anthropic SDK tool runner, which repeats the
   call-tool / return-result loop until Claude gives a final answer, and
-  returns that answer's text.
+  returns that final message.
+- `ask(question)`: answers one question and returns the answer's text.
+- `chat()`: multi-turn chat in the terminal, so Claude can ask follow-up
+  questions such as which of several address matches was meant. Only Claude's
+  final answer from each turn is kept in the history. If Claude needs an
+  earlier tool result again, it calls the tool again. An empty line or Ctrl-D
+  quits.
 - The model is `claude-opus-5` (`MODEL`). Server-side refusal fallback is
   turned on (`fallbacks="default"`): if the model declines a request, the API
   runs it again on a fallback model chosen by Anthropic. If the whole chain
   declines, `ask` returns "The request was declined."
-- Run from the command line with the question as arguments. If no question is
-  given, a built-in example question is used.
+- Run from the command line with the question as arguments to use `ask`. With
+  no arguments it starts `chat`.
 
 ---
 
@@ -687,6 +723,9 @@ currently run on its own with `python -m`.
 - Parcel IDs are stored as the county's `parcelid`, which has no leading
   zeros (`733316`). The county's own lookup uses 8 digits (`00733316`), so pad
   with zeros when checking a parcel there.
+- The assistant is told to base every dollar amount on a tool result, but it
+  can still add explanations no tool gave. In one test it named the
+  neighborhood and guessed a reason for the value that no tool had returned.
 - `config/schema.yaml` is empty, and `Dockerfile` is an IDE placeholder.
 
 ## Repository layout
