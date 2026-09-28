@@ -30,8 +30,11 @@ SYSTEM_PROMPT = (
     "to CHARLOTTE_12 (parts of Charlotte, numbered north to south), DAVIDSON, "
     "CORNELIUS, HUNTERSVILLE, MINT HILL, MATTHEWS and PINEVILLE. Any feature left "
     "out of a tool call is filled with a county-wide typical value, so estimates "
-    "and comps are much weaker without the house's area and location - ask for "
-    "them if the user hasn't given them. Ground every dollar figure in an actual "
+    "and comps are much weaker without the house's area and location. When the user "
+    "gives an address or parcel id, call lookup_property first and pass its feature "
+    "values into predict_total_value / find_similar_houses; if it returns several "
+    "matches, ask which one. For a described house with no address, use area_stats "
+    "for typical values of its area, or ask for the address. Ground every dollar figure in an actual "
     "tool result - never state one you didn't get from a tool. find_deals results "
     "are past sales, not houses for sale now. Some are renovation-driven gaps (a "
     "distressed property sold cheap as-is, then renovated, so its current record "
@@ -188,15 +191,49 @@ def find_deals(
         return _tool_error(e)
 
 
-def ask(question: str) -> str:
-    """Run one natural-language question through the tool-use loop; return Claude's final answer text."""
+@beta_tool
+def lookup_property(address: Optional[str] = None, parcel_id: Optional[str] = None) -> str:
+    """Look up a Mecklenburg property's county record by street address or parcel id: its
+    assessed value, last sale and every model feature. Pass the returned feature values
+    into predict_total_value / find_similar_houses. May return several matches, or none.
+
+    Args:
+        address: Street address starting with the house number, e.g. "221 Altondale Ave, Charlotte".
+        parcel_id: County parcel id, e.g. "15506217".
+    """
+    try:
+        return json.dumps(search.lookup_property(address=address, parcel_id=parcel_id), default=str)
+    except ValueError as e:
+        return _tool_error(e)
+
+
+@beta_tool
+def area_stats(area: Optional[str] = None) -> str:
+    """Typical values per area: house count, median assessed value, size, year built, recent
+    sale $/sqft, price_momentum and accessibility. Use it to compare areas, or for typical
+    feature values when the user describes a house without an address.
+
+    Args:
+        area: One area, e.g. MATTHEWS or CHARLOTTE_3. Omit for every area.
+    """
+    try:
+        return json.dumps(search.area_stats(area=area), default=str)
+    except ValueError as e:
+        return _tool_error(e)
+
+
+TOOLS = [lookup_property, area_stats, predict_total_value, find_similar_houses, find_deals]
+
+
+def _run(messages: list) -> anthropic.types.beta.BetaMessage:
+    """Run the tool-use loop over a conversation; return Claude's final message."""
     client = anthropic.Anthropic()
     runner = client.beta.messages.tool_runner(
         model=MODEL,
         max_tokens=16000,
         system=SYSTEM_PROMPT,
-        tools=[predict_total_value, find_similar_houses, find_deals],
-        messages=[{"role": "user", "content": question}],
+        tools=TOOLS,
+        messages=messages,
         # if Claude Opus 5 declines, the API re-runs the request on a fallback model
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
@@ -204,15 +241,41 @@ def ask(question: str) -> str:
     last = None
     for message in runner:
         last = message
-    if last.stop_reason == "refusal":
+    return last
+
+
+def _answer_text(message) -> str:
+    if message.stop_reason == "refusal":
         return "The request was declined."
-    return next((b.text for b in last.content if b.type == "text"), "")
+    return next((b.text for b in message.content if b.type == "text"), "")
+
+
+def ask(question: str) -> str:
+    """Run one natural-language question through the tool-use loop; return Claude's final answer text."""
+    return _answer_text(_run([{"role": "user", "content": question}]))
+
+
+def chat():
+    """Multi-turn chat in the terminal, so Claude can ask follow-up questions (e.g. which of
+    several address matches). Only the final answer of each turn is kept in the history;
+    Claude re-calls a tool if it needs an earlier result again. Empty line or Ctrl-D quits."""
+    messages = []
+    while True:
+        try:
+            question = input("\nyou> ").strip()
+        except EOFError:
+            break
+        if not question:
+            break
+        messages.append({"role": "user", "content": question})
+        reply = _run(messages)
+        messages.append({"role": "assistant", "content": reply.content})
+        print(f"\nassistant> {_answer_text(reply)}")
 
 
 if __name__ == "__main__":
     import sys
-    question = " ".join(sys.argv[1:]) or (
-        "What's a 3 bed 2 bath single_family house in Matthews worth, "
-        "2000 sqft, built 2005? Also show me a couple of comps."
-    )
-    print(ask(question))
+    if sys.argv[1:]:
+        print(ask(" ".join(sys.argv[1:])))
+    else:
+        chat()
