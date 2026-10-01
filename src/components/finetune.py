@@ -1,6 +1,6 @@
 """Retrain the last training run's best model on the current features, then validate it.
 
-Picks the best feature set x model from reports/training_metrics.csv (lowest RMSE, the
+Picks the best feature set x model from reports/training_metrics.csv (lowest MAE, the
 metric training.py's hyperparameter search optimizes) and the settings that search
 chose for it from reports/best_hyperparameters.json, then retrains that one model with
 those settings on the current feature file - so it picks up features added since that
@@ -30,12 +30,12 @@ from src.components.evaluating import (
     DISPLAY_COLUMNS, add_estimates, load_splits, print_validation, select_houses,
 )
 from src.components.training import (
-    FEATURE_SETS, MODEL_TYPES, TARGET, build_preprocessor, build_search_estimators, eval_metrics, save_artifacts,
+    FEATURE_SETS, MODEL_TYPES, SELECTION_METRIC, TARGET, build_preprocessor, build_search_estimators, eval_metrics,
+    save_artifacts,
 )
 from src.utils.common import resolve_path, save_dataframe
 from src.utils.load_config import load_config
 
-SELECTION_METRIC = "rmse"
 METRICS = ["rmse", "mae", "r2", "mape"]
 FINETUNED_DIR = "finetuned/"
 
@@ -57,7 +57,8 @@ def build_model(model_name, params, training_cfg):
     model = clone(search.estimator).set_params(**params)
     # training.py runs each fit single-threaded and parallelizes the search instead; a
     # single random forest fit can use every core. xgboost stays at n_jobs=1, which it
-    # needs on this setup (see training.build_search_estimators).
+    # needs on this setup (see training.build_search_estimators). hist_gradient_boosting
+    # uses every core on its own outside the search.
     if model_name == "random_forest":
         model.set_params(n_jobs=-1)
     return model
@@ -74,6 +75,8 @@ def validation_houses(test, reports_path, name):
     previous = pd.read_csv(previous_path)
     houses = select_houses(test, parcel_ids=previous["parcel_id"].tolist())
     results = houses[DISPLAY_COLUMNS].reset_index(drop=True)
+    if name not in previous:  # the last check was run on a different model type
+        return houses, results
     last_run = previous[["parcel_id", name, f"{name}__pct_error"]].rename(
         columns={name: "last_run", f"{name}__pct_error": "last_run__pct_error"}
     )

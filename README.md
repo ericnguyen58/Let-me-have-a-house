@@ -73,44 +73,58 @@ as described below.
 
 ## Current models
 
-Only random forest is in use for now (`training.MODEL_TYPES`). It scored
-better than XGBoost on both feature sets in an earlier full training run. The
-XGBoost setup is kept in `training.py` and can be switched back on.
+Only histogram gradient boosting (scikit-learn's
+`HistGradientBoostingRegressor`) is in use for now (`training.MODEL_TYPES`).
+Models are chosen by MAE in dollars: the aim is a smaller typical miss, even
+if RMSE or R squared had to give a little. In a comparison on a validation
+split carved from the training rows, gradient boosting beat the tuned random
+forest on every metric anyway (MAE $29,407 against $33,066), and its model
+files are 45 to 70 MB instead of about 1.1 GB. The random forest and XGBoost
+setups are kept in `training.py` and can be switched back on.
 
-Both random forests come from the latest full training run (about 25
-minutes). It uses all 27 features, including the school, crime, flood and
+Both models come from the latest full training run (about 20 minutes). It
+uses all 27 features, including the school, crime, flood and
 light rail features, and the about 9,200 golf, waterfront and high-rise homes
 that were added back (see `data_preprocessing.py`). Market sales are the ones
 the county marked "Qualified".
 
 | File in `output/models/` | Test set (about 61,000 houses) |
 |---|---|
-| `with_neighborhood_price_random_forest` (default) | RMSE $86,183, MAE $32,826, R squared 0.950, average error 5.71% |
-| `without_neighborhood_price_random_forest` | RMSE $88,283, MAE $34,435, R squared 0.948, average error 6.00% |
+| `with_neighborhood_price_hist_gradient_boosting` (default) | RMSE $76,440, MAE $29,614, R squared 0.961, average error 5.10% |
+| `without_neighborhood_price_hist_gradient_boosting` | RMSE $75,598, MAE $29,778, R squared 0.962, average error 5.14% |
+| `*_random_forest` | Previous models, not used. RMSE $86,183, MAE $32,826, R squared 0.950, average error 5.71% (default feature set); $88,283, $34,435, 0.948, 6.00% (without neighborhood price). Their metrics and settings are kept in `reports/random_forest_run/`. |
 | `*_xgboost` | Not used, and no longer fit the current preprocessors. |
 
-The previous run, without those 9,200 homes, had an average error of 5.43%
-(default) and 5.64% (without neighborhood price). The errors are not directly
-comparable: the test set now includes expensive golf-course and Lake Norman
-homes, which are harder to value.
+On the same test set, the switch from random forest lowered MAE by 9.8%
+(default) and 13.5% (without neighborhood price). With gradient boosting the
+two feature sets are almost equally accurate, so the neighborhood price
+column adds little once the other location features are in.
+
+The best settings for both feature sets: `learning_rate` 0.05,
+`max_leaf_nodes` 255, `min_samples_leaf` 10, `max_features` 0.5,
+`l2_regularization` 0.1. Early stopping chose 1,589 trees (default) and
+2,327 trees (without neighborhood price).
 
 **Test houses** (held out of training; `evaluating.validate_houses` with
 their parcel IDs):
 
 | House | Assessed | Default model | Without neighborhood price |
 |---|---|---|---|
-| 4817 Kelly Woods Ln | $1,191,900 | $1,257,091 (+5.5%) | $1,240,310 (+4.1%) |
-| 3612 Abbey Hill Ln | $612,600 | $619,873 (+1.2%) | $619,772 (+1.2%) |
+| 4817 Kelly Woods Ln | $1,191,900 | $1,296,627 (+8.8%) | $1,340,598 (+12.5%) |
+| 3612 Abbey Hill Ln | $612,600 | $596,105 (−2.7%) | $601,817 (−1.8%) |
+
+These two houses came out better with the random forest (+5.5% and +1.2%).
+Two houses are too few to judge by; on the 10-house check the mean error went
+from 5.7% to 4.6%.
 
 `predict.py` and the assistant give slightly different numbers for the same
-houses ($1,225,073 and $599,709 with the default model). `lookup_property`
+houses ($1,170,346 and $595,113 with the default model). `lookup_property`
 computes the neighborhood price features from every other house's sales,
 while validation uses training sales only. Both leave out the house's own
-sale. Before the county sale code was used and the own sale was left out, the
-gap for Kelly Woods was 13% ($1,110,923); it is now 2.5%.
+sale.
 
 A full training run (`uv run python -m src.components.training`) retrains both
-random forests with every current feature and tunes their settings again.
+models with every current feature and tunes their settings again.
 
 ## Data flow
 
@@ -135,7 +149,7 @@ feature_engineering.py
         |
         v
 training.py
-  2 feature sets x random forest    -> output/models/*.joblib
+  2 feature sets x gradient boosting -> output/models/*.joblib
   metrics                           -> reports/training_metrics.csv,
                                        reports/best_hyperparameters.json
         |
@@ -177,10 +191,10 @@ uv run python -m src.components.market_estimate       # backtest today's-price m
 
 Each stage reads its inputs from the previous stage's output files, so they
 must be run in order the first time. Preprocessing and feature engineering
-each take about 20 seconds. Training takes much longer, because it runs a
-hyperparameter search for 2 random forests on about 304,000 houses.
-`finetune.py`, which retrains one model with known settings, takes about a
-minute.
+each take about 20 seconds. Training takes much longer (about 20 minutes), because it runs a
+hyperparameter search for 2 gradient boosting models on about 304,000 houses.
+`finetune.py`, which retrains one model with known settings, takes about 2.5
+minutes.
 
 ## Configuration
 
@@ -525,9 +539,9 @@ Trains models that estimate `total_value` (the 2023 assessed value).
 | `without_neighborhood_price` | The same features without that column. The neighborhood price already contains most of the effect of location, amenities and area, so this is the model to read when asking what `area` and the accessibility features are worth. |
 
 Each set is trained with every model type in `MODEL_TYPES`. That is only
-`random_forest` for now, so 2 models are trained. `build_search_estimators`
-also defines XGBoost, which comes back by adding `"xgboost"` to
-`MODEL_TYPES`.
+`hist_gradient_boosting` for now, so 2 models are trained.
+`build_search_estimators` also defines random forest and XGBoost, which come
+back by adding `"random_forest"` or `"xgboost"` to `MODEL_TYPES`.
 
 **Features** (`FEATURE_COLUMNS`):
 
@@ -564,9 +578,12 @@ sales. Their neighborhood price is filled with the median.
   and one-hot encoded. One preprocessor is fitted per feature set.
 - `build_search_estimators`: wraps each model in `RandomizedSearchCV`, which
   tries `search_iter` random hyperparameter combinations with `cv_folds`
-  cross-validation folds and picks the one with the lowest RMSE. Random forest
-  depth is capped to keep model files a reasonable size. XGBoost uses
-  `tree_method="approx"` and `n_jobs=1` because other settings crashed on this
+  cross-validation folds and picks the one with the lowest MAE in dollars
+  (`dollar_mae`, which converts the log predictions back before scoring;
+  `SELECTION_METRIC` names the metric for `finetune.py` too). Gradient
+  boosting uses early stopping on an internal 10% split, so `max_iter` (3,000)
+  is only an upper bound. Random forest depth is capped to keep model files a
+  reasonable size. XGBoost uses `tree_method="approx"` and `n_jobs=1` because other settings crashed on this
   Python / XGBoost / macOS combination. Parallelism is set on the search
   instead.
 - `train_models`: for each feature set, fits the preprocessor on the training
@@ -579,8 +596,8 @@ sales. Their neighborhood price is filled with the median.
   - `reports/best_hyperparameters.json`
 
 Models trained before `price_momentum` was added still load, but they ignore
-the column. Retrain to use it. Each random forest file is about 1.1 GB, so
-loading one takes a few seconds.
+the column. Retrain to use it. Each gradient boosting file is 45 to 70 MB;
+the old random forest files are about 1.1 GB each.
 
 ### `evaluating.py`
 
@@ -633,7 +650,7 @@ validates it. Use it after adding a feature, instead of a full training run.
 
 - **Which model.** `best_previous_model` reads `reports/training_metrics.csv`
   from the last full training run, picks the feature set and model type in
-  use with the lowest RMSE (the measure the
+  use with the lowest MAE (`training.SELECTION_METRIC`, the measure the
   hyperparameter search optimizes), and reads the settings the search chose
   for it from `reports/best_hyperparameters.json`.
 - **Retraining.** The model is trained again from scratch with those settings,
@@ -641,14 +658,15 @@ validates it. Use it after adding a feature, instead of a full training run.
   The hyperparameter search is skipped, which makes this much faster than a
   full run. Tree models cannot be updated in place when the feature list
   changes, so this is a full retrain of one model, not incremental training.
-  A single random forest uses all CPU cores (`build_model`).
+  The model uses all CPU cores (`build_model`).
 - **Validation against the last run.**
   - Test-set RMSE, MAE, R squared and MAPE, side by side with the last run's
     values for the same model, and the change.
   - The same houses as the last 10-house check
     (`reports/validation_houses.csv`), with the last run's estimate and the
     new one side by side. If that file does not exist, 10 random test houses
-    are used.
+    are used. If it was written for a different model type, the same houses
+    are used without the last run's columns.
 - **Output.** Nothing from the last run is overwritten:
   - `output/models/finetuned/<feature_set>_preprocessor.joblib` and
     `<feature_set>_<model>.joblib`
@@ -670,7 +688,7 @@ validates it. Use it after adding a feature, instead of a full training run.
 
 Estimates `total_value` for one house.
 
-- `predict_total_value(features, feature_set="with_neighborhood_price", model_name="random_forest")`:
+- `predict_total_value(features, feature_set="with_neighborhood_price", model_name="hist_gradient_boosting")`:
   `features` is a dictionary of feature names to values. It returns the
   estimate in dollars.
 - Any feature not given is filled the same way as in training (median or most
@@ -681,7 +699,7 @@ Estimates `total_value` for one house.
   `with_neighborhood_price` is the default, because it is the one meant for
   estimates. An unknown name raises `ValueError`.
 - `model_name` must be a type in `training.MODEL_TYPES` (only
-  `random_forest` for now); anything else raises `ValueError`.
+  `hist_gradient_boosting` for now); anything else raises `ValueError`.
 - `load_model(feature_set, model_name)` returns the preprocessor and model.
   `load_artifact` caches loaded files, so repeated calls do not reload from
   disk. `search.py` uses the same cache.
@@ -729,7 +747,7 @@ Mecklenburg.
   and the distance. The results come from any area. When the query leaves many
   features out, the missing ones are filled with typical values, and the
   closest houses can be in a different area from the one given.
-- `find_deals(model_name="random_forest", feature_set="with_neighborhood_price", top_n=10, min_sale_price=10000, area=None)`:
+- `find_deals(model_name="hist_gradient_boosting", feature_set="with_neighborhood_price", top_n=10, min_sale_price=10000, area=None)`:
   despite the name, this does not find houses for sale. It finds past
   arms-length sales that were well below the model's estimate, ranked by
   `deal_score = (predicted_value - sale_price) / predicted_value`. `area`
@@ -763,7 +781,7 @@ to call and writes the answer from their results.
     `search.lookup_property`.
   - `area_stats`: takes an optional `area`, and calls `search.area_stats`.
   - `predict_total_value`: takes any of the 27 features plus `feature_set`,
-    and calls `predict.predict_total_value` with the default random forest.
+    and calls `predict.predict_total_value` with the default model.
     It also returns `adjusted_to_today`, the estimate times
     `predict.market_adjustment()`, when the Zillow file has been downloaded.
   - `find_similar_houses`: takes the same features plus `feature_set` and `k`,

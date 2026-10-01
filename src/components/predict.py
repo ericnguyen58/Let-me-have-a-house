@@ -28,7 +28,7 @@ from src.utils.common import resolve_path
 from src.utils.load_config import load_config
 
 DEFAULT_FEATURE_SET = "with_neighborhood_price"
-DEFAULT_MODEL_NAME = "random_forest"
+DEFAULT_MODEL_NAME = "hist_gradient_boosting"
 # Last Zillow index month before the January 1, 2023 revaluation total_value comes from.
 ASSESSMENT_INDEX_MONTH = "2022-12-31"
 
