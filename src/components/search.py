@@ -31,8 +31,9 @@ import numpy as np
 import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 
+from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
 from src.components.predict import DEFAULT_FEATURE_SET, DEFAULT_MODEL_NAME, load_model
-from src.components.training import FEATURE_COLUMNS, FEATURE_SETS
+from src.components.training import FEATURE_COLUMNS, FEATURE_SETS, SALE_DERIVED_FEATURES
 from src.utils.common import read_dataframe, resolve_path
 from src.utils.load_config import load_config
 
@@ -49,6 +50,7 @@ DEAL_DISPLAY_COLUMNS = [
 PROPERTY_DISPLAY_COLUMNS = [
     "parcel_id", "situs_street_num", "situs_street_name", "situs_city", "neighborhood_code",
     "total_value", "land_value", "building_value", "sale_price", "sale_date",
+    "elementary_school", "middle_school", "high_school",
 ] + FEATURE_COLUMNS
 
 # A sale below this flat price/sqft is treated as implausible, not a great deal - e.g. a
@@ -135,13 +137,17 @@ def find_deals(model_name=DEFAULT_MODEL_NAME, feature_set=DEFAULT_FEATURE_SET, t
 
 
 def lookup_property(address=None, parcel_id=None, limit=5):
-    """Properties matching a parcel_id or a street address like "221 Altondale Ave, Charlotte".
+    """Properties matching a parcel_id or a street address like "3612 Abbey Hill Ln, Charlotte".
 
     Street names are stored abbreviated ("ALTONDALE AV"), so an address matches on its
     house number plus the first word of the street name - "Ave"/"Avenue" don't matter.
     If a Mecklenburg city name appears in the address, results are limited to it.
     Can return several rows (same street name in different towns, or several units at one
     number), so the caller picks the right one.
+
+    The neighborhood price features are recomputed without the matched houses' own
+    sales, as training.py does for test houses, so a house's estimate never uses its
+    own sale price.
     """
     df = _load_features_df(resolve_path(load_config(), "features_data"))
     if parcel_id is not None:
@@ -161,7 +167,12 @@ def lookup_property(address=None, parcel_id=None, limit=5):
     else:
         raise ValueError("give an address or a parcel_id")
 
-    results = match.head(limit)[PROPERTY_DISPLAY_COLUMNS]
+    match = match.head(limit)
+    others = df[~df["parcel_id"].isin(match["parcel_id"])]
+    match = add_price_momentum(
+        add_neighborhood_aggregates(match.drop(columns=SALE_DERIVED_FEATURES), source=others), source=others
+    )
+    results = match[PROPERTY_DISPLAY_COLUMNS]
     return results.astype(object).where(results.notna(), None).to_dict(orient="records")
 
 
@@ -192,18 +203,13 @@ def area_stats(area=None):
 
 
 if __name__ == "__main__":
-    example = {
-        "land_use_class": "single_family", "acreage": 0.3, "year_built": 2005,
-        "heated_area": 2000, "bedrooms": 3, "bathrooms": 2, "latitude": 35.2,
-        "longitude": -80.8, "property_age": 20, "neighborhood_median_price_per_sqft": 180,
-        "neighborhood_sale_count": 50, "price_momentum": 0.15, "area": "CHARLOTTE_9", "education_nearest_miles": 0.5,
-        "places_count": 8000, "health_care_share": 0.07, "activity_share": 0.03,
-        "emergency_fire_miles": 1.2, "emergency_police_miles": 2.0, "emergency_medical_miles": 2.5,
-    }
-    print("--- similar houses ---")
-    for row in find_similar_houses(example, k=5):
-        print(row)
-
-    print("\n--- top deals ---")
-    for row in find_deals(top_n=5):
-        print(row)
+    for address in load_config()["test_addresses"]:
+        house = lookup_property(address)[0]
+        print(f"=== {address}: {house['area']}, assessed ${house['total_value']:,.0f}")
+        print("--- similar houses ---")
+        for row in find_similar_houses(house, k=5):
+            print(row)
+        print(f"--- top deals in {house['area']} ---")
+        for row in find_deals(top_n=3, area=house["area"]):
+            print(row)
+        print()

@@ -34,6 +34,33 @@ params:
 nc_places:
   bbox: "-84.5,33.7,-75.4,36.6"
 
+# Mecklenburg County GIS layers, saved to raw_data/meck_gis/{layer}.geojson
+meck_gis:
+  url: https://meckgis.mecklenburgcountync.gov/server/rest/services/{layer}/FeatureServer/0/query
+  page_size: 2000
+  layers:
+    - CMSElementarySchoolDistricts
+    - CMSMiddleSchoolDistricts
+    - CMSHighSchoolDistricts
+    - NeighborhoodProfileAreas
+    - FEMAFloodplain
+    - CATSLynxBlueLineStations
+  # Quality of Life indicators per neighborhood profile area (NPA), attributes only
+  quality_of_life:
+    layer: NeighborhoodProfileAreas_QualityofLife
+    indicators: [Violent_Crimes, Property_Crimes]
+    year: "2022"
+
+# NC School Report Card datasets (zips of xlsx files); only `files` are extracted
+report_cards:
+  urls:
+    - https://www.dpi.nc.gov/src-data-set-2024-251-2/open
+    - https://www.dpi.nc.gov/src-data-set-2024-252-2/open
+  files: [rcd_acc_spg2.xlsx, rcd_location.xlsx]
+
+# Zillow Home Value Index by county (monthly), for adjusting estimates to today's prices
+zillow_zhvi: https://files.zillowstatic.com/research/public_csvs/zhvi/County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv
+
 # training.py: models per feature set (see training.FEATURE_SETS / MODEL_TYPES),
 # hyperparameter-tuned via RandomizedSearchCV (search_iter candidates x cv_folds folds)
 training:
@@ -42,3 +69,9 @@ training:
   random_state: 42
   search_iter: 15
   cv_folds: 3
+
+# The houses every example run and check in the project uses (predict, search,
+# market_estimate, notebooks/shap_explain.ipynb)
+test_addresses:
+  - 4817 Kelly Woods Ln, Charlotte NC 28277
+  - 3612 Abbey Hill Ln, Charlotte NC 28210

@@ -11,6 +11,11 @@ way training does (median/most-frequent imputation) - callers don't need to supp
 every field. Imputed location fields (`area`, latitude/longitude, the accessibility
 features) fall back to county-wide typical values, so estimates are much weaker
 without them.
+
+market_adjustment scales an estimate from the January 2023 assessment date to today by
+Zillow's home value index for Mecklenburg (data/raw/zillow/county_zhvi.csv, from
+data_ingestor.py). It moves the number by the county's average price change only; it
+doesn't turn an assessed value into a market price.
 """
 
 import functools
@@ -24,6 +29,8 @@ from src.utils.load_config import load_config
 
 DEFAULT_FEATURE_SET = "with_neighborhood_price"
 DEFAULT_MODEL_NAME = "random_forest"
+# Last Zillow index month before the January 1, 2023 revaluation total_value comes from.
+ASSESSMENT_INDEX_MONTH = "2022-12-31"
 
 
 @functools.lru_cache(maxsize=None)
@@ -56,30 +63,23 @@ def predict_total_value(features, feature_set=DEFAULT_FEATURE_SET, model_name=DE
     return float(np.expm1(log_pred))
 
 
+@functools.lru_cache(maxsize=1)
+def market_adjustment():
+    """(factor, latest_month): Zillow's Mecklenburg County index in its latest month
+    divided by its value in ASSESSMENT_INDEX_MONTH."""
+    zhvi = pd.read_csv(resolve_path(load_config(), "raw_data") + "zillow/county_zhvi.csv")
+    row = zhvi[(zhvi["RegionName"] == "Mecklenburg County") & (zhvi["State"] == "NC")].iloc[0]
+    latest_month = zhvi.columns[-1]
+    return float(row[latest_month] / row[ASSESSMENT_INDEX_MONTH]), latest_month
+
+
 if __name__ == "__main__":
-    example = {
-        "land_use_class": "single_family",
-        "area": "CHARLOTTE_1",
-        "acreage": 0.46323194,
-        "year_built": 1950,
-        "heated_area": 1017,
-        "bedrooms": 2,
-        "bathrooms": 1,
-        "latitude": 35.33386622,
-        "longitude": -80.87131071,
-        "property_age": 76,
-        "neighborhood_median_price_per_sqft": 161.31783787093235,
-        "neighborhood_sale_count": 46,
-        "price_momentum": 0.2,
-        "education_nearest_miles": 0.5,
-        "places_count": 6000,
-        "health_care_share": 0.06,
-        "activity_share": 0.03,
-        "emergency_fire_miles": 1.2,
-        "emergency_police_miles": 2.0,
-        "emergency_medical_miles": 2.5,
-    }
-    for feature_set in FEATURE_SETS:
-        for model_name in MODEL_TYPES:
-            pred = predict_total_value(example, feature_set=feature_set, model_name=model_name)
-            print(f"{feature_set} {model_name}: ${pred:,.0f}")
+    from src.components.search import lookup_property
+
+    for address in load_config()["test_addresses"]:
+        house = lookup_property(address)[0]
+        print(f"{address} (assessed ${house['total_value']:,.0f})")
+        for feature_set in FEATURE_SETS:
+            for model_name in MODEL_TYPES:
+                pred = predict_total_value(house, feature_set=feature_set, model_name=model_name)
+                print(f"  {feature_set} {model_name}: ${pred:,.0f}")

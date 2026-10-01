@@ -26,7 +26,7 @@ from src.utils.load_config import load_config
 
 COMMON_COLUMNS = [
     "county", "parcel_id", "owner_name", "situs_street_num", "situs_street_name", "situs_city", "situs_zip",
-    "sale_price", "sale_date", "deed_book", "deed_page", "land_value", "building_value", "total_value",
+    "sale_price", "sale_date", "sale_qualification", "deed_book", "deed_page", "land_value", "building_value", "total_value",
     "acreage", "land_use_class", "neighborhood_code", "year_built", "heated_area", "bedrooms", "bathrooms",
     "latitude", "longitude",
 ]
@@ -40,10 +40,15 @@ LAND_USE_MAP = {
     "100": "single_family",
     "SINGLE FAMILY RESIDENTIAL": "single_family",
     "SINGLE FAMILY RESIDENTIAL - ACREAGE": "single_family",
+    "SINGLE FAMILY RESIDENTIAL - GOLF": "single_family",
+    "SINGLE FAMILY RESIDENTIAL - WATERFRONT": "single_family",
+    "RURAL HOMESITE": "single_family",
     "RESIDENTIAL": "single_family",
     "TOWN HOUSE  SFR": "townhouse",
     "TOWNHOUSE": "townhouse",
     "CONDOMINIUM": "condo",
+    "CONDOMINIUM WATER FRONTAGE": "condo",
+    "CONDOMINIUM HIGH RISE": "condo",
     "311": "condo",
     "V": "vacant_land",
     "N": "vacant_land",
@@ -55,6 +60,11 @@ MIN_SALE_YEAR = 1900
 ARMS_LENGTH_MIN_PRICE = 10_000
 ARMS_LENGTH_MAX_PRICE = 20_000_000
 ARMS_LENGTH_LOOKBACK_YEARS = 10
+# The county's own sale code (`naldesc`): "Qualified" is a market sale; everything else
+# names why it isn't (related parties, foreclosure, bank or government seller, several
+# parcels in one deed, ...). About 23% of sales that pass the price/date check aren't
+# Qualified.
+QUALIFIED_SALE = "Qualified"
 
 # Keywords identifying an owner_name as a business/institutional entity rather than an
 # individual person (LLCs, trusts, banks, HOAs, government bodies, etc.) - used to drop
@@ -91,9 +101,10 @@ MERGE_INTO_NEAREST_CITY = ["UNINC", "STALLINGS"]
 NEAREST_CITY_NEIGHBORS = 15
 
 # Charlotte is ~75% of the county, so it's split into areas made of whole neighborhoods
-# (neighborhood_code), each at most MAX_AREA_SIZE houses. Splitting ~223k houses in half
-# repeatedly lands at ~28k per area; the largest single neighborhood is ~1.5k houses, so
-# a split never overshoots by much. Other towns keep their natural size.
+# (neighborhood_code), each at most MAX_AREA_SIZE houses. Splitting ~238k houses in half
+# repeatedly lands at ~15k per area (one ~30k part stays whole); the largest single
+# neighborhood is ~1.5k houses, so a split never overshoots by much. Other towns keep
+# their natural size.
 SPLIT_CITY = "CHARLOTTE"
 MAX_AREA_SIZE = 30_000
 
@@ -165,6 +176,7 @@ def meck_to_common(df):
         "situs_zip": pd.NA,  # only the owner's mailing zip is present, not situs
         "sale_price": df["saleprice"],
         "sale_date": pd.to_datetime(df["saledate"], format="%d/%m/%y %H:%M", errors="coerce"),
+        "sale_qualification": df["naldesc"].str.strip(),
         "deed_book": df["deed_book"],
         "deed_page": df["deed_page"],
         "land_value": df["totlandval"],
@@ -375,7 +387,8 @@ def clean_properties(df):
 
     recent_cutoff = pd.Timestamp(year=current_year - ARMS_LENGTH_LOOKBACK_YEARS, month=1, day=1)
     df["arms_length_sale"] = (
-        df["sale_price"].between(ARMS_LENGTH_MIN_PRICE, ARMS_LENGTH_MAX_PRICE)
+        (df["sale_qualification"] == QUALIFIED_SALE)
+        & df["sale_price"].between(ARMS_LENGTH_MIN_PRICE, ARMS_LENGTH_MAX_PRICE)
         & (df["sale_date"] >= recent_cutoff)
     )
 
