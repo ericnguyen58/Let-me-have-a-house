@@ -26,8 +26,11 @@ SYSTEM_PROMPT = (
     "You are a house-value assistant for Mecklenburg County, North Carolina. The "
     "models estimate a property's 2023 county assessed value (total_value), which "
     "is a reference point for judging a market price, not a market price itself - "
-    "say so when you give an estimate. Houses are grouped into areas: CHARLOTTE_1 "
-    "to CHARLOTTE_12 (parts of Charlotte, numbered north to south), DAVIDSON, "
+    "say so when you give an estimate. predict_total_value also returns "
+    "adjusted_to_today: the estimate scaled by Zillow's Mecklenburg home value index "
+    "since December 2022 - a rough county-wide price change, still not a market "
+    "price for this house. Houses are grouped into areas: CHARLOTTE_1 "
+    "to CHARLOTTE_15 (parts of Charlotte, numbered north to south), DAVIDSON, "
     "CORNELIUS, HUNTERSVILLE, MINT HILL, MATTHEWS and PINEVILLE. Any feature left "
     "out of a tool call is filled with a county-wide typical value, so estimates "
     "and comps are much weaker without the house's area and location. When the user "
@@ -46,7 +49,7 @@ SYSTEM_PROMPT = (
 # Shared by the predict/similar tools, which take the same feature arguments.
 FEATURE_ARGS_DOC = """
         land_use_class: single_family, condo, or townhouse.
-        area: CHARLOTTE_1 to CHARLOTTE_12, DAVIDSON, CORNELIUS, HUNTERSVILLE, MINT HILL, MATTHEWS, or PINEVILLE.
+        area: CHARLOTTE_1 to CHARLOTTE_15, DAVIDSON, CORNELIUS, HUNTERSVILLE, MINT HILL, MATTHEWS, or PINEVILLE.
         acreage: Lot size in acres.
         year_built: Year the structure was built.
         heated_area: Heated square footage.
@@ -65,6 +68,13 @@ FEATURE_ARGS_DOC = """
         emergency_fire_miles: Miles to the nearest fire station, if known.
         emergency_police_miles: Miles to the nearest police station, if known.
         emergency_medical_miles: Miles to the nearest emergency department, if known.
+        elementary_school_score: NC performance score (0-100) of the assigned elementary school, if known.
+        middle_school_score: NC performance score (0-100) of the assigned middle school, if known.
+        high_school_score: NC performance score (0-100) of the assigned high school, if known.
+        violent_crime_rate: Violent crimes per 1,000 residents in the neighborhood profile area, if known.
+        property_crime_rate: Property crimes per 1,000 residents in the neighborhood profile area, if known.
+        in_floodplain: 1 if the property is in the FEMA floodplain, else 0, if known.
+        light_rail_miles: Miles to the nearest LYNX Blue Line station, if known.
         feature_set: "with_neighborhood_price" (default, meant for estimates) or "without_neighborhood_price" (value from area and accessibility alone)."""
 
 
@@ -111,6 +121,13 @@ def predict_total_value(
     emergency_fire_miles: Optional[float] = None,
     emergency_police_miles: Optional[float] = None,
     emergency_medical_miles: Optional[float] = None,
+    elementary_school_score: Optional[float] = None,
+    middle_school_score: Optional[float] = None,
+    high_school_score: Optional[float] = None,
+    violent_crime_rate: Optional[float] = None,
+    property_crime_rate: Optional[float] = None,
+    in_floodplain: Optional[float] = None,
+    light_rail_miles: Optional[float] = None,
     feature_set: str = predict.DEFAULT_FEATURE_SET,
 ) -> str:
     """Estimate a Mecklenburg property's 2023 assessed value (total_value) from its features.
@@ -123,9 +140,15 @@ def predict_total_value(
     features = _features(locals())
     try:
         value = predict.predict_total_value(features, feature_set=feature_set)
-        return json.dumps({"predicted_total_value": round(value, 2)})
     except (ValueError, FileNotFoundError) as e:
         return _tool_error(e)
+    result = {"predicted_total_value": round(value, 2)}
+    try:
+        factor, month = predict.market_adjustment()
+        result.update(adjusted_to_today=round(value * factor, 2), index_change=round(factor - 1, 4), index_month=month)
+    except FileNotFoundError:
+        pass  # Zillow index not downloaded yet - estimate without the adjustment
+    return json.dumps(result)
 
 
 @beta_tool
@@ -151,6 +174,13 @@ def find_similar_houses(
     emergency_fire_miles: Optional[float] = None,
     emergency_police_miles: Optional[float] = None,
     emergency_medical_miles: Optional[float] = None,
+    elementary_school_score: Optional[float] = None,
+    middle_school_score: Optional[float] = None,
+    high_school_score: Optional[float] = None,
+    violent_crime_rate: Optional[float] = None,
+    property_crime_rate: Optional[float] = None,
+    in_floodplain: Optional[float] = None,
+    light_rail_miles: Optional[float] = None,
     feature_set: str = predict.DEFAULT_FEATURE_SET,
     k: int = 5,
 ) -> str:
@@ -198,8 +228,8 @@ def lookup_property(address: Optional[str] = None, parcel_id: Optional[str] = No
     into predict_total_value / find_similar_houses. May return several matches, or none.
 
     Args:
-        address: Street address starting with the house number, e.g. "221 Altondale Ave, Charlotte".
-        parcel_id: County parcel id, e.g. "15506217".
+        address: Street address starting with the house number, e.g. "3612 Abbey Hill Ln, Charlotte".
+        parcel_id: County parcel id, e.g. "20947309".
     """
     try:
         return json.dumps(search.lookup_property(address=address, parcel_id=parcel_id), default=str)

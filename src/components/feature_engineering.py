@@ -3,8 +3,7 @@
 Reads data/processed/properties_clean.csv and adds property_age, price_per_sqft,
 per-neighborhood price aggregates, and accessibility features in four groups:
 
-- education: miles to the nearest school (school quality to be added once CMS
-  attendance zones and NC report card grades are sourced)
+- education: miles to the nearest school
 - health care: share of places within COUNT_RADIUS_MILES that are health care
 - emergency: miles to the nearest fire station, police station, and emergency
   department (see label_emergency_departments)
@@ -12,6 +11,11 @@ per-neighborhood price aggregates, and accessibility features in four groups:
   (parks, theaters, gyms, ...)
 
 plus places_count, the number of places of any kind within COUNT_RADIUS_MILES.
+
+It also adds location context from Mecklenburg GIS and NC DPI (see add_location_context):
+the performance score of the house's assigned elementary, middle and high school,
+violent and property crime rates of its neighborhood profile area, whether it is in
+the FEMA floodplain, and miles to the nearest LYNX Blue Line station.
 Health care and activity are shares of places_count rather than raw counts: raw
 counts both mostly measured how built-up the area is (correlation 0.91), so
 places_count carries that on its own and the shares say what kind of places are
@@ -30,7 +34,9 @@ The neighborhood aggregates and price_momentum here are computed on every row;
 training.py recomputes both from its training rows only.
 """
 
+import re
 from datetime import datetime
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree
@@ -97,6 +103,25 @@ ACTIVITY_CATS = [
     "community_center", "shopping_mall",
 ]
 
+# School grades, crime rates: the year the January 2023 assessment would have seen.
+# NC DPI's `year` 2022 is the 2021-22 school year.
+SCHOOL_GRADE_YEAR = 2022
+CMS_AGENCY_PREFIX = "600"
+# NC DPI category_code a school can have and still serve each CMS zone level:
+# E elementary, M middle, H high, I K-8 / PreK-8, T 6-12 or similar combined grades.
+SCHOOL_LEVELS = {
+    "elementary": ("CMSElementarySchoolDistricts", "elem_name", ["E", "I"]),
+    "middle": ("CMSMiddleSchoolDistricts", "midd_name", ["M", "I", "T"]),
+    "high": ("CMSHighSchoolDistricts", "high_name", ["H", "T"]),
+}
+# Words dropped before matching zone names ("J.W. Grier") to report card names
+# ("Joseph W Grier Academy"), along with single-letter initials.
+SCHOOL_NAME_STOPWORDS = {
+    "elementary", "elem", "middle", "high", "school", "academy", "the", "of", "and", "prek", "k",
+}
+CRIME_INDICATORS = {"Violent_Crimes": "violent_crime_rate", "Property_Crimes": "property_crime_rate"}
+
+
 def add_property_age(df):
     df["property_age"] = CURRENT_YEAR - df["year_built"]
     return df
@@ -156,6 +181,73 @@ def add_accessibility(df, nc_places_df):
     df["activity_share"] = places_within_miles(df, places, COUNT_RADIUS_MILES, ACTIVITY_CATS) / df["places_count"]
     return df
 
+def _name_tokens(name):
+    words = re.sub(r"[^a-z ]", " ", name.lower()).split()
+    return {w for w in words if len(w) > 1 and w not in SCHOOL_NAME_STOPWORDS}
+
+
+def school_scores(zone_names, report_cards, categories):
+    """School performance score for each CMS zone school name. A zone name matches a
+    report card school of an allowed category whose name contains all of its words;
+    if several do, the one with the fewest extra words ("Alexander" -> "J. M. Alexander
+    Middle" over "Alexander Graham Middle"). Schools that opened after SCHOOL_GRADE_YEAR
+    have no grade and get NaN."""
+    candidates = report_cards[report_cards["category_code"].isin(categories)]
+    cand_tokens = [(_name_tokens(n), score) for n, score in zip(candidates["name"], candidates["spg_score"])]
+    scores = {}
+    for zone_name in set(zone_names.dropna()):
+        tokens = _name_tokens(zone_name)
+        matches = [(len(t - tokens), score) for t, score in cand_tokens if tokens and tokens <= t]
+        scores[zone_name] = min(matches)[1] if matches else np.nan
+    return zone_names.map(scores)
+
+
+def load_report_cards(raw_path):
+    """CMS schools' names, category codes and overall performance score (spg_score,
+    0-100) for SCHOOL_GRADE_YEAR."""
+    rc_path = raw_path + "school_report_cards/"
+    loc = pd.read_excel(rc_path + "rcd_location.xlsx")
+    spg = pd.read_excel(rc_path + "rcd_acc_spg2.xlsx")
+    loc = loc[(loc["year"] == SCHOOL_GRADE_YEAR) & loc["agency_code"].astype(str).str.startswith(CMS_AGENCY_PREFIX)]
+    spg = spg[(spg["year"] == SCHOOL_GRADE_YEAR) & (spg["subgroup"] == "ALL")]
+    return loc[["agency_code", "name", "category_code"]].merge(spg[["agency_code", "spg_score"]], on="agency_code")
+
+
+def add_location_context(df, raw_path):
+    """Assigned-school scores, neighborhood crime rates, floodplain and light rail
+    distance, all by the house's coordinates. Houses without coordinates get NaN."""
+    gis_path = raw_path + "meck_gis/"
+    houses = df[["latitude", "longitude"]].dropna()
+    points = gpd.GeoDataFrame(index=houses.index, geometry=gpd.points_from_xy(houses["longitude"], houses["latitude"]), crs=4326)
+
+    def join(layer, columns):
+        """Columns of the `layer` polygon each house falls in (first one if several overlap)."""
+        polygons = gpd.read_file(gis_path + f"{layer}.geojson")[columns + ["geometry"]]
+        joined = gpd.sjoin(points, polygons, how="left", predicate="within")
+        return joined[~joined.index.duplicated()][columns].reindex(df.index)
+
+    report_cards = load_report_cards(raw_path)
+    for level, (layer, name_col, categories) in SCHOOL_LEVELS.items():
+        # the name is for display (lookup_property), not a model feature
+        df[f"{level}_school"] = join(layer, [name_col])[name_col]
+        df[f"{level}_school_score"] = school_scores(df[f"{level}_school"], report_cards, categories)
+
+    # Crime rates per 1,000 residents. CMPD covers Charlotte only, so NPAs in the towns
+    # with their own police departments have no value.
+    qol = pd.read_csv(gis_path + "quality_of_life.csv")
+    rates = qol.pivot_table(index="npa", columns="raw_data_name", values="normalized").rename(columns=CRIME_INDICATORS)
+    npa = join("NeighborhoodProfileAreas", ["npa"])
+    df = df.join(npa.merge(rates, left_on="npa", right_index=True, how="left")[list(CRIME_INDICATORS.values())].set_axis(df.index))
+
+    floodplain = join("FEMAFloodplain", ["objectid"])["objectid"]
+    df["in_floodplain"] = floodplain.notna().astype(float).where(df["latitude"].notna())
+
+    stations = gpd.read_file(gis_path + "CATSLynxBlueLineStations.geojson")
+    distance, _ = nearest_distance(houses["latitude"], houses["longitude"], stations.geometry.y, stations.geometry.x)
+    df["light_rail_miles"] = pd.Series(np.minimum(distance, MAX_DISTANCE_MILES), index=houses.index).reindex(df.index)
+    return df
+
+
 def add_neighborhood_aggregates(df, source=None):
     """Median price_per_sqft and sale count per neighborhood, computed from `source`
     rows (default: df itself) - training.py passes its training rows so test rows'
@@ -207,12 +299,13 @@ def add_price_momentum(df, source=None):
     return out.drop(columns=["growth", "sales", "area_growth"])
 
 
-def build_features(df, nc_places_df):
+def build_features(df, nc_places_df, raw_path):
     df = add_property_age(df)
     df = add_price_per_sqft(df)
     df = add_neighborhood_aggregates(df)
     df = add_price_momentum(df)
     df = add_accessibility(df, nc_places_df)
+    df = add_location_context(df, raw_path)
     return df
 
 
@@ -225,7 +318,7 @@ def run():
     clean["arms_length_sale"] = clean["arms_length_sale"].astype(bool)
     places = read_dataframe(processed_path, "nc_places_map.csv")
 
-    features = build_features(clean, places)
+    features = build_features(clean, places, resolve_path(cfg, "raw_data"))
     save_dataframe(features, features_path, "properties_features.csv")
     return features
 

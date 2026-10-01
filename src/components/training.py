@@ -64,6 +64,8 @@ NUMERIC_FEATURES = [
     "neighborhood_median_price_per_sqft", "neighborhood_sale_count", "price_momentum",
     "education_nearest_miles", "places_count", "health_care_share", "activity_share",
     "emergency_fire_miles", "emergency_police_miles", "emergency_medical_miles",
+    "elementary_school_score", "middle_school_score", "high_school_score",
+    "violent_crime_rate", "property_crime_rate", "in_floodplain", "light_rail_miles",
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 FEATURE_SETS = {
@@ -83,10 +85,20 @@ def load_training_data(features_path):
     return df.drop(columns=SALE_DERIVED_FEATURES)
 
 
+def test_address_parcels():
+    """Parcel ids of config `test_addresses`, the houses every example and check uses."""
+    from src.components.search import lookup_property  # search imports this module
+    return [row["parcel_id"] for address in load_config().get("test_addresses", [])
+            for row in lookup_property(address)]
+
+
 def split_with_aggregates(df, training_cfg):
     train, test = train_test_split(
         df, test_size=training_cfg["test_size"], random_state=training_cfg["random_state"]
     )
+    # the test addresses always go to the test set, so their estimates are real tests
+    moved = train["parcel_id"].isin(test_address_parcels())
+    train, test = train[~moved], pd.concat([test, train[moved]])
 
     def add(rows):
         return add_price_momentum(add_neighborhood_aggregates(rows, source=train), source=train)
