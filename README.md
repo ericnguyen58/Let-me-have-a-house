@@ -61,12 +61,12 @@ as described below.
 | 2. Clean and assign areas | `src/components/data_preprocessing.py` | Implemented |
 | 3. Feature engineering | `src/components/feature_engineering.py` | Implemented |
 | 4. Training | `src/components/training.py` | Implemented |
-| 5. Evaluation | `src/components/evaluating.py` | 10-house validation implemented. Other planned tests not yet complete. |
+| 5. Evaluation | `src/components/evaluating.py` | 10-house validation, drop-column test (one split) and same house by area implemented. Repeated splits, noise column and baseline model not yet complete. |
 | 5b. Retrain best model | `src/components/finetune.py` | Implemented |
 | 6. Prediction | `src/components/predict.py` | Implemented |
 | 7. Search (property lookup, area stats, similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
 | 8. Assistant (Claude tool use) | `src/components/assistant.py` | Implemented |
-| Market estimate (sales ratio) and backtest | `src/components/market_estimate.py` | Implemented, standalone |
+| Market estimate (sales ratio), `market_value` (model chain) and backtests | `src/components/market_estimate.py` | Implemented. Not yet used by the assistant. |
 | Pipeline orchestration | `src/pipeline/` | Not yet complete (empty package) |
 | API | `api/main.py` | Not yet complete (empty file) |
 | Docker | `Dockerfile` | Not yet complete (IDE placeholder that runs `top`) |
@@ -181,12 +181,18 @@ uv run python -m src.components.data_preprocessing   # clean and assign areas
 uv run python -m src.components.feature_engineering  # add features
 uv run python -m src.components.training             # train models
 uv run python -m src.components.evaluating           # validate 10 houses
+uv run python -m src.components.evaluating drop_column        # retrain without each feature group (about 80 minutes)
+uv run python -m src.components.evaluating same_house_by_area # the same house in each area (about 10 minutes)
 uv run python -m src.components.finetune             # retrain the best model on current features
 uv run python -m src.components.predict              # example estimates
 uv run python -m src.components.search               # example comps and deals
 uv run python -m src.components.assistant "your question here"
 uv run python -m src.components.assistant             # multi-turn chat
 uv run python -m src.components.market_estimate       # backtest today's-price methods
+uv run python -m src.components.market_estimate calibrate    # out-of-fold model estimates for market_value (about 15 minutes)
+uv run python -m src.components.market_estimate houses       # market_value for the test houses, two per path
+uv run python -m src.components.market_estimate chain        # backtest the model chain at one cutoff (about 3 minutes)
+uv run python -m src.components.market_estimate chain-multi  # the same at 9 quarterly cutoffs (about 26 minutes)
 ```
 
 Each stage reads its inputs from the previous stage's output files, so they
@@ -629,15 +635,56 @@ rerunning feature engineering, retrain before validating.
 Ten houses show how the models behave on individual cases. They are too few to
 compare models; use `reports/training_metrics.csv` for that.
 
+**Feature groups.** `FEATURE_GROUPS` puts every feature in one group:
+house, location (area, coordinates, neighborhood sale count, price
+momentum), neighborhood_price, accessibility, school, crime, flood and
+light_rail. The drop-column test, the same-house test and
+`notebooks/shap_explain.ipynb` all use it.
+
+**Drop-column test (implemented, one split).**
+`drop_column_test(feature_set)`:
+- Retrains the production gradient boosting model (settings from
+  `reports/best_hyperparameters.json`, early stopping as in training)
+  without one group at a time, and without `area`, `places_count` and
+  `health_care_share` alone. Each is scored on the full test set.
+- Reports the change in MAE and in average percent error, with a 95%
+  paired bootstrap interval over test houses.
+- Measures seed noise as the range of the full model's percent error over
+  seeds 42, 1, 2 and 3.
+- `real` is True when the interval excludes 0 and the change is larger than
+  the seed noise.
+
+`run_drop_column_test()` runs both feature sets and writes
+`reports/drop_column.csv`. Each drop is fit with one seed, and seed noise
+is not measured for MAE, so small changes stay uncertain. See `report.md`.
+
+**Same house by area (implemented).** `same_house_by_area()`:
+- **Reference houses:** the config test addresses, plus the typical
+  single-family house, townhouse and condo (the real house closest to its
+  type's median).
+- **Locations:** in each area, the house is given the location of 300 real
+  parcels of the same type: every non-house feature from one parcel at a
+  time.
+- **Premium:** each area's mean log estimate against the same house given
+  3,000 county-wide locations.
+- **Checks:** a size-coverage share (neighborhoods with a house of the same
+  type within 25% of the size), and a raw-data premium (median assessed
+  value per sq ft of similar-sized houses) with no model involved.
+
+`area_premium_decomposition(house)` splits each area's premium into
+location groups with exact Shapley values. It pairs area and county
+parcels and evaluates all 64 group combinations. `run_same_house_by_area()`
+writes `reports/same_house_by_area.csv` and
+`reports/area_premium_decomposition.csv`, which
+`notebooks/area_effect.ipynb` plots.
+
 **Not yet complete.** Planned additions:
 
-- A drop-column test for each accessibility group: train without it and
-  compare test error on the same split, repeated over 5 splits.
+- The drop-column test repeated over 5 splits (or seeds), for both percent
+  error and MAE.
 - A random noise column as a baseline for feature importance.
 - A simple baseline model (`heated_area x neighborhood median price per sq
   ft`) to compare the models against.
-- The same-house comparison across areas: predict one house's value with its
-  `area` and location features set to each area in turn.
 
 The rule for deciding whether a feature matters should be written down before
 looking at results. For example: removing it raises test MAE by at least 1% in
@@ -829,27 +876,47 @@ to call and writes the answer from their results.
 
 Explains the model with SHAP in three stages, each adding features to the
 previous one: the house only, then the neighborhood, then accessibility,
-school, crime, flood and light rail. It uses the same train/test split as
-`training.py`, with smaller forests (depth 18, 100 trees) so SHAP runs in a
-few minutes. It runs in about 6 minutes, and ends with a breakdown of each
-test house.
+school, crime, flood and light rail. Three side scenarios add only
+accessibility or only the flood zone to the house, or use every feature
+except the neighborhood price. Each scenario is a gradient boosting model
+with the production settings (`reports/best_hyperparameters.json`) and the
+same train/test split as `training.py`. It runs in about 16 minutes, and ends
+with a breakdown of each test house. `report.md` sums up the results and the
+method.
 
-| Stage | Test MAE | Average error |
+| Scenario | Test MAE | Average error |
 |---|---|---|
-| House only | $87,404 | 15.01% |
-| + Neighborhood | $35,324 | 6.15% |
-| + Everything else | $34,258 | 5.96% |
+| House only | $87,566 | 15.19% |
+| House + accessibility | $33,067 | 5.62% |
+| House + flood zone | $87,337 | 15.15% |
+| + Neighborhood | $30,682 | 5.25% |
+| + Everything else | $29,413 | 5.08% |
+| Everything except neighborhood price | $29,862 | 5.18% |
 
-The neighborhood's median price per sq ft gives the largest gain. The new
-location features add a small gain. Of those, health care share, elementary
-school score and violent crime rate rank highest. See the notebook's last
-section for the full reading and its limits.
+The neighborhood's median price per sq ft gives the largest gain, but the
+accessibility features alone get about 96% of the way there. Without the
+neighborhood price, the model is as accurate, and the credit moves to
+accessibility and schools. The flood zone adds almost nothing.
+
+## notebooks/area_effect.ipynb
+
+Plots `evaluating.same_house_by_area`. Run
+`uv run python -m src.components.evaluating same_house_by_area` first.
+
+- The typical single-family house (2,125 sq ft) would be assessed at about
+  $325,000 in CHARLOTTE_3 and $713,000 in CHARLOTTE_9: −25% and +70%
+  against a typical county location.
+- The model's premiums correlate 0.88 to 0.95 with a raw-data check.
+- Central Charlotte's premiums come mostly from accessibility. Those of the
+  lake towns and southern suburbs come mostly from schools.
 
 ### `market_estimate.py`
 
 Moves a 2023 assessed value to today's market price with a **sales ratio**,
-the check assessors use on their own values. Standalone: no other module
-imports it, so deleting the file (and this section) removes it.
+the check assessors use on their own values. `market_value` (below) builds on
+it to value any house, chaining in the model where the county value can't be
+used. No other module imports this one, so deleting the file (and this
+section) removes it.
 
 - `load_sales`: arms-length sales with a price, an assessed value, at least
   $50 per sq ft, and a sale date no later than today. The county file has a
@@ -859,8 +926,10 @@ imports it, so deleting the file (and this section) removes it.
   from its own sales only. It uses the last 12 months; if the neighborhood
   had fewer than 3 sales (`MIN_NEIGHBORHOOD_SALES`), it looks back 24 and
   then 36 months (`RATIO_WINDOWS_MONTHS`). Another neighborhood's or the
-  area's ratio is never used: inside one area, a golf-course neighborhood
-  and the starter homes next to it can move very differently.
+  area's ratio is never used here: inside one area, a golf-course
+  neighborhood and the starter homes next to it can move very differently.
+  `market_value` falls back to the area only when the neighborhood has no
+  usable sales at all.
 - `market_estimate(assessed_value, neighborhood_code)`: assessed value times
   the neighborhood's ratio, with an 80% range (`range_low`, `range_high`),
   the number of sales and the window used. There is no estimate
@@ -948,6 +1017,108 @@ Limits:
   likely come in below it: right after the 2023 revaluation, sales ran about
   7.6% above assessed values.
 
+#### `market_value(house)`: the model chain
+
+Values any house, including the ones `market_estimate` refuses: new houses,
+neighborhoods with few sales, and what-ifs. It is one formula, today's price =
+starting value x ratio, and the house decides both parts:
+
+| House | Starting value | Ratio |
+|---|---|---|
+| Built before 2023 | County's 2023 assessed value | Neighborhood ratio |
+| Built 2023 or later | County value, or the model's estimate when the county value is below 85% of it (`PARTIAL_ASSESSMENT_SHARE`) | Neighborhood ratio against that starting value |
+| What-if, or no county value (`total_value` left out or `None`) | Model's estimate | Neighborhood ratio of sale / model estimate |
+| Neighborhood with fewer than 3 sales in 36 months | As above | Fallbacks, in order (`RATIO_METHODS`): the neighborhood's sales from the last 60 months, each moved to today by the Zillow county index, from as few as 1 sale; the area's ratio over 12 months (at least 30 sales); Zillow's county factor |
+
+- `house` is a dict like `search.lookup_property` returns. The result has
+  `market_estimate`, `range_low`/`range_high` (80%), the starting value and
+  why it was chosen (`reason`), both the county value and the model's
+  estimate, the ratio with its method, sales and months, and `confidence`
+  ("normal" for a neighborhood ratio, "lower" for the 60-month or area
+  fallback, "low" for Zillow).
+- **Why a model estimate needs its own ratio.** When the model's estimate is
+  the starting value, the ratio is the median of sale price / model estimate
+  over the neighborhood's recent sales. This cancels the model's local bias:
+  if it runs 3% low in a neighborhood, that ratio comes out about 3% higher.
+  Applying the county-value ratio to a model estimate instead stacks both
+  errors (7.2% median error, against 6.4%).
+- **Why new houses are checked for partial assessments.** The county values a
+  new house on January 1. A house still unfinished then gets a partial value,
+  and for 2026 sales of houses built since 2023, sale price / county value
+  spread out widely (middle half 0.67 to 0.99 wide, against 0.14 for 2025
+  sales). A county value far below the model's estimate is the sign.
+- **Out-of-fold estimates** (`build_out_of_fold_estimates`, run with
+  `market_estimate calibrate`): the model's estimate for an existing house,
+  and for each sale behind a ratio, comes from a model that never saw that
+  house (5 fits, each leaving out a fifth of the parcels, folds by parcel
+  because the feature file lists some parcels twice). The production model
+  was trained on every house's county value, partial ones included, so its
+  estimate for a house it saw sits close to that house's own county value and
+  the partial-assessment check would not fire. Saved to
+  `output/models/out_of_fold_estimates.csv`; rerun after retraining or
+  refreshing the data. A what-if uses the production model.
+- **Ranges** (`range_factors_by_method`): calibrated like `range_factors`, on
+  the last 6 months' sales, separately for the neighborhood ratio and for the
+  fallbacks together. The fallback range is much wider (as of October 2026
+  about -12% to +40%).
+
+**Backtest** (`multi_cutoff_backtest`, `chain-multi`): 9 quarterly cutoffs
+from April 2024 to April 2026. For each, the model is refit without the houses
+that sold in the 42 months before the cutoff or after it (`model_estimates`),
+their neighborhood features leave out their own sale and every sale from the
+cutoff on, and ratios and the Zillow factor use only earlier sales. Each sale
+is scored once, in the window after the cutoff before it. 31,358 sales;
+per-sale results in `reports/market_chain_predictions.csv`.
+
+| Group | Sales | `market_value` design | County value x ratio, Zillow fallback | Model x calibrated ratio |
+|---|---|---|---|---|
+| Built before 2023 | 22,576 | 6.0% | 6.0% | 6.4% |
+| Built 2023 or later | 7,077 | 4.3% | 4.4% | 6.0% |
+| Fewer than 3 neighborhood sales in 36 months | 1,705 | 6.4% | 10.0% | 14.9% (with Zillow) |
+| All | 31,358 | 5.6% (72.5% within 10%) | 5.8% | 6.5% (with Zillow) |
+
+Median absolute % error against the sale price. The new-house rows flatter
+the county value: for any sale before 2026 the value on file was set after the
+house was finished, and often after it sold. For 2026 sales of new houses:
+
+| Rule for houses built 2023 or later | Sold before 2026 (5,871) | Sold in 2026 (1,206) |
+|---|---|---|
+| Always the county value | 4.0% | 12.3% |
+| Always the model | 5.7% | 8.6% |
+| County value unless below 85% of the model's estimate | 4.0% | 6.5% |
+
+The share was picked on these same sales, but the result barely moves between
+85% and 95%. The rule does not help older houses (6.0% either way), so it
+only applies to new ones. For the fallback group, the options compared on the
+same 1,705 sales were: Zillow alone 10.0%, area ratio alone 7.2%, 60-month
+time-adjusted neighborhood ratio (at least 1 sale; covers 66% of them) then
+area 6.4%. Without the time adjustment, the same 60-month sales give 13.6%.
+
+The model chain's error on new houses grew over time (about 4% in 2024 to
+about 9% in 2026). Recent new houses with partial county values are now in
+the model's training data, which probably teaches it to value new houses low.
+
+**Test houses** (`market_test_houses` in `config/config.yaml`, two per path;
+`uv run python -m src.components.market_estimate houses` reruns them, flags any
+house whose path no longer matches its `expect`, and saves
+`reports/market_test_houses.csv`). As of October 1, 2026:
+
+| Group | House | Starting value | Ratio | Market estimate | 80% range |
+|---|---|---|---|---|---|
+| Built before 2023 | 4817 Kelly Woods Ln | $1,191,900 (county) | 1.259, neighborhood (4 sales) | $1,500,904 | $1,341,891 to $1,798,045 |
+| Built before 2023 | 3612 Abbey Hill Ln | $612,600 (county) | 1.364, neighborhood (6 sales) | $835,309 | $746,812 to $1,000,678 |
+| Built 2023 or later | 333 Cranford Dr, Pineville (2024) | $411,800 (county; full assessment) | 1.081, neighborhood (9 sales) | $445,000 | $397,855 to $533,099 |
+| Built 2023 or later | 5204 Mint Harbor Wy (2025) | $582,582 (model; county value $336,500 is 58% of it) | 1.606, neighborhood vs model (53 sales) | $935,850 | $823,180 to $1,106,998 |
+| No neighborhood ratio | 12020 Jumper Dr, Mint Hill | $609,200 (county) | 1.053, 60-month adjusted (3 sales) | $641,311 | $563,464 to $894,959 |
+| No neighborhood ratio | 7916 Pebbleridge Dr | $344,700 (county) | 1.160, area (381 sales) | $399,823 | $351,289 to $557,959 |
+| What-if | Abbey Hill, +1 bedroom, +400 sq ft | $674,548 (model) | 1.363, neighborhood vs model | $919,435 (+$108,274) | $808,742 to $1,087,582 |
+| What-if | Kelly Woods, +1 bathroom | $1,174,624 (model) | 1.273, neighborhood vs model | $1,495,363 (+$5,446) | $1,315,331 to $1,768,835 |
+
+A what-if's change in brackets compares it with the same house, unchanged,
+through the same model; it is what the change alone is worth. Mint Harbor's
+1.606 is high because the model's estimates for new houses run low (see
+above), and the ratio against the model's estimate makes up for it.
+
 ## src/pipeline
 
 Not yet complete. Contains only an empty `__init__.py`. Each stage is
@@ -957,7 +1128,11 @@ currently run on its own with `python -m`.
 
 - The models estimate the 2023 assessed value, which can differ from today's
   market price. `market_adjustment` moves it by the county-wide price change
-  only.
+  only; `market_estimate.market_value` gives a market price, but the assistant
+  doesn't use it yet.
+- The feature file lists 1,931 parcels twice, with identical rows. Most code
+  is unaffected; `market_value`'s folds are assigned by parcel because of it.
+  A twin pair can still be split across `training.py`'s train and test sets.
 - The owner-name filter removes names containing "TRUST". Many ordinary
   homeowners hold their house in a family trust, so this likely removes more
   expensive homes than cheap ones.
@@ -994,9 +1169,12 @@ config/           config.yaml, schema.yaml (empty)
 data/raw/         downloaded and hand-placed source files
 data/processed/   cleaned properties and places map
 data/features/    feature table used for training and search
-notebooks/        exploration notebooks; shap_explain.ipynb explains the model stage by stage
+notebooks/        exploration notebooks; shap_explain.ipynb explains the model stage by stage,
+                  area_effect.ipynb compares the same house across areas
 output/models/    trained preprocessors and models (finetuned/ holds retrained ones)
-reports/          training metrics, chosen hyperparameters, house validation
+reports/          training metrics, chosen hyperparameters, house validation, drop-column
+                  and same-house-by-area results
+report.md         the research write-up: SHAP, drop-column test, same house by area
 test/             no tests yet
 Dockerfile        placeholder, not yet complete
 ```

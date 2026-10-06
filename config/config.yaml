@@ -75,3 +75,33 @@ training:
 test_addresses:
   - 4817 Kelly Woods Ln, Charlotte NC 28277
   - 3612 Abbey Hill Ln, Charlotte NC 28210
+  - 7631 Seton House Ln, Charlotte NC 28277
+
+# Two houses for each path market_estimate.market_value can take, checked by
+# `uv run python -m src.components.market_estimate houses`. `expect` is the path each
+# took when chosen (October 2026); new sales or a retrained model can move a house to
+# another path, which the check reports. Kept apart from test_addresses, which
+# training.py forces into the test set - adding to it would change the training split.
+market_test_houses:
+  built_before_2023:  # county value x neighborhood ratio
+    - address: 4817 Kelly Woods Ln, Charlotte NC 28277
+      expect: {starting_value_source: county assessed value, ratio_method: neighborhood}
+    - address: 3612 Abbey Hill Ln, Charlotte NC 28210
+      expect: {starting_value_source: county assessed value, ratio_method: neighborhood}
+  built_2023_or_later:  # full assessment keeps the county value; a partial one switches to the model
+    - address: 333 Cranford Dr, Pineville NC
+      expect: {starting_value_source: county assessed value, ratio_method: neighborhood}
+    - address: 5204 Mint Harbor Wy, Charlotte NC
+      expect: {starting_value_source: out-of-fold model, ratio_method: neighborhood}
+  no_neighborhood_ratio:  # 60-month time-adjusted neighborhood ratio, then the area's ratio
+    - address: 12020 Jumper Dr, Mint Hill NC
+      expect: {starting_value_source: county assessed value, ratio_method: neighborhood_adjusted}
+    - address: 7916 Pebbleridge Dr, Charlotte NC
+      expect: {starting_value_source: county assessed value, ratio_method: area}
+  what_if:  # the house with `changes` applied and no county value, so the model starts
+    - address: 3612 Abbey Hill Ln, Charlotte NC 28210
+      changes: {bedrooms: 5, heated_area: 2996}  # an addition: +1 bedroom, +400 sq ft
+      expect: {starting_value_source: production model, ratio_method: neighborhood}
+    - address: 4817 Kelly Woods Ln, Charlotte NC 28277
+      changes: {bathrooms: 5.5}  # one more bathroom
+      expect: {starting_value_source: production model, ratio_method: neighborhood}
