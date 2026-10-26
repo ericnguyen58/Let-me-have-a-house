@@ -65,8 +65,8 @@ as described below.
 | 5b. Retrain best model | `src/components/finetune.py` | Implemented |
 | 6. Prediction | `src/components/predict.py` | Implemented |
 | 7. Search (property lookup, area stats, similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
-| 8. Assistant (Claude tool use) | `src/components/assistant.py` | Implemented |
-| Market estimate (sales ratio), `market_value` (model chain) and backtests | `src/components/market_estimate.py` | Implemented. Not yet used by the assistant. |
+| 8. Assistant (tool use, local Qwen3.5-9B or Claude) | `src/components/assistant.py` | Implemented |
+| Market estimate (sales ratio), `market_value` (model chain) and backtests | `src/components/market_estimate.py` | Implemented. Used by the assistant's `estimate_market_value` tool. |
 | Pipeline orchestration | `src/pipeline/` | Not yet complete (empty package) |
 | API | `api/main.py` | Not yet complete (empty file) |
 | Docker | `Dockerfile` | Not yet complete (IDE placeholder that runs `top`) |
@@ -154,10 +154,11 @@ training.py
                                        reports/best_hyperparameters.json
         |
         v
-predict.py, search.py               (load the saved models and feature table)
+predict.py, search.py,              (load the saved models and feature table)
+market_estimate.py
         |
         v
-assistant.py                        (Claude calls predict/search as tools)
+assistant.py                        (the model calls predict/search/market_value as tools)
 ```
 
 ## Setup
@@ -167,9 +168,20 @@ uv sync
 ```
 
 Requires Python 3.14 or newer. `overturemaps` is used as a command-line tool
-(called through `subprocess`), not as a Python import. The assistant needs
-`ANTHROPIC_API_KEY`, either in the environment or in a `.env` file (see
-`.env.example`).
+(called through `subprocess`), not as a Python import.
+
+The assistant runs on a free local model by default, Qwen3.5-9B (Apache 2.0,
+the weights Qwen publishes on Hugging Face), through Ollama:
+
+```bash
+brew install ollama
+ollama serve                 # keep running in another terminal
+ollama pull qwen3.5:9b       # about 7.6 GB, once
+```
+
+It needs about 8 GB of free memory. To use Claude instead, set
+`ASSISTANT_MODEL=claude-opus-5` and `ANTHROPIC_API_KEY`, in the environment or
+in a `.env` file (see `.env.example`).
 
 ## Running each stage
 
@@ -819,14 +831,19 @@ Mecklenburg.
 
 ### `assistant.py`
 
-Lets a user ask questions in plain language. Claude decides which functions
-to call and writes the answer from their results.
+Lets a user ask questions in plain language. A language model decides which
+functions to call and writes the answer from their results.
 
-- Five tools are registered with the `@beta_tool` decorator from the
+- Six tools are registered with the `@beta_tool` decorator from the
   Anthropic SDK, listed in `TOOLS`:
   - `lookup_property`: takes an `address` or `parcel_id`, and calls
     `search.lookup_property`.
   - `area_stats`: takes an optional `area`, and calls `search.area_stats`.
+  - `estimate_market_value`: takes a `parcel_id`, looks the house up and
+    calls `market_estimate.market_value` for today's price with an 80%
+    range. With a new `heated_area`, `bedrooms` or `bathrooms` it calls
+    `market_estimate.what_if` instead, which also returns
+    `change_vs_unchanged`, what the change alone is worth.
   - `predict_total_value`: takes any of the 27 features plus `feature_set`,
     and calls `predict.predict_total_value` with the default model.
     It also returns `adjusted_to_today`, the estimate times
@@ -839,11 +856,16 @@ to call and writes the answer from their results.
   (`FEATURE_ARGS_DOC`), which `_with_feature_docs` inserts into each docstring
   before `@beta_tool` turns the docstring into the tool schema.
 - Tools return JSON strings. Errors, such as an unknown feature set or models
-  that have not been trained yet, are returned as `{"error": ...}` so Claude
-  can explain them.
-- `SYSTEM_PROMPT` tells Claude:
-  - the estimate is the 2023 assessed value, a reference point rather than a
-    market price,
+  that have not been trained yet, are returned as `{"error": ...}` so the
+  model can explain them.
+- `SYSTEM_PROMPT` tells the model:
+  - for today's price of a real property, to call `lookup_property` and then
+    `estimate_market_value`, and to give the range, the number of sales
+    behind the ratio, and the confidence when it isn't normal,
+  - for a what-if, to pass the new values and give `change_vs_unchanged`,
+  - that `predict_total_value` estimates the 2023 assessed value, a reference
+    point rather than a market price, and that its `adjusted_to_today` is
+    rough and only for a house described without an address,
   - the list of areas,
   - when given an address or parcel ID, to call `lookup_property` first and
     pass its feature values into the estimate and comps tools, and to ask
@@ -854,19 +876,30 @@ to call and writes the answer from their results.
   - to only give dollar amounts that came from a tool,
   - to mention the renovation and assessed-versus-market caveats whenever it
     shows deals.
-- `_run(messages)`: runs the Anthropic SDK tool runner, which repeats the
-  call-tool / return-result loop until Claude gives a final answer, and
-  returns that final message.
+- `MODEL` comes from `ASSISTANT_MODEL`. The default is `qwen3.5:9b`, which
+  runs locally through Ollama for free (see Setup); a model id starting with
+  `claude` uses the Anthropic API.
+- `_run(messages)`: runs the call-tool / return-result loop until the model
+  gives a final answer, and returns the answer's text and the message to keep
+  in the history.
+  - Claude (`_run_claude`): the Anthropic SDK tool runner. Server-side
+    refusal fallback is turned on (`fallbacks="default"`): if the model
+    declines a request, the API runs it again on a fallback model chosen by
+    Anthropic. If the whole chain declines, `ask` returns "The request was
+    declined."
+  - Ollama (`_run_ollama`): a plain loop over Ollama's `/api/chat`, with the
+    same tool schemas (`to_dict()` of each `@beta_tool`). It sets a 32,768
+    token context (`OLLAMA_CONTEXT`), since the tool schemas alone are about
+    15,000 characters and Ollama's default is 4,096 tokens. Bad tool
+    arguments go back to the model as an error, and the loop stops after 10
+    rounds (`MAX_TOOL_ROUNDS`). An answer takes 35 to 60 seconds on an M3 Pro
+    with 18 GB.
 - `ask(question)`: answers one question and returns the answer's text.
-- `chat()`: multi-turn chat in the terminal, so Claude can ask follow-up
-  questions such as which of several address matches was meant. Only Claude's
-  final answer from each turn is kept in the history. If Claude needs an
+- `chat()`: multi-turn chat in the terminal, so the model can ask follow-up
+  questions such as which of several address matches was meant. Only the
+  model's final answer from each turn is kept in the history. If it needs an
   earlier tool result again, it calls the tool again. An empty line or Ctrl-D
   quits.
-- The model is `claude-opus-5` (`MODEL`). Server-side refusal fallback is
-  turned on (`fallbacks="default"`): if the model declines a request, the API
-  runs it again on a fallback model chosen by Anthropic. If the whole chain
-  declines, `ask` returns "The request was declined."
 - Run from the command line with the question as arguments to use `ask`. With
   no arguments it starts `chat`.
 
@@ -915,8 +948,8 @@ Plots `evaluating.same_house_by_area`. Run
 Moves a 2023 assessed value to today's market price with a **sales ratio**,
 the check assessors use on their own values. `market_value` (below) builds on
 it to value any house, chaining in the model where the county value can't be
-used. No other module imports this one, so deleting the file (and this
-section) removes it.
+used. The assistant's `estimate_market_value` tool calls `market_value` and
+`what_if`; no other module imports this one.
 
 - `load_sales`: arms-length sales with a price, an assessed value, at least
   $50 per sq ft, and a sale date no later than today. The county file has a
@@ -1128,8 +1161,9 @@ currently run on its own with `python -m`.
 
 - The models estimate the 2023 assessed value, which can differ from today's
   market price. `market_adjustment` moves it by the county-wide price change
-  only; `market_estimate.market_value` gives a market price, but the assistant
-  doesn't use it yet.
+  only. `market_estimate.market_value` gives a market price, and the assistant
+  uses it for any property with an address, but a house described without
+  one still only gets the Zillow-adjusted figure.
 - The feature file lists 1,931 parcels twice, with identical rows. Most code
   is unaffected; `market_value`'s folds are assigned by parcel because of it.
   A twin pair can still be split across `training.py`'s train and test sets.
@@ -1154,8 +1188,11 @@ currently run on its own with `python -m`.
   zeros (`733316`). The county's own lookup uses 8 digits (`00733316`), so pad
   with zeros when checking a parcel there.
 - The assistant is told to base every dollar amount on a tool result, but it
-  can still add explanations no tool gave. In one test it named the
+  can still add explanations no tool gave. In one test Claude named the
   neighborhood and guessed a reason for the value that no tool had returned.
+  Qwen3.5-9B got every dollar amount right in three test questions, but
+  mislabeled some of them: it called the neighborhood's sales "sales in this
+  area", and called a what-if's starting value the current house's.
 - `config/schema.yaml` is empty, and `Dockerfile` is an IDE placeholder.
 
 ## Repository layout

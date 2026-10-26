@@ -1,35 +1,48 @@
-"""Claude tool-use layer over the retrieval/prediction functions.
+"""Tool-use layer over the retrieval/prediction functions.
 
-Wires predict.py's predict_total_value and search.py's find_similar_houses /
-find_deals as tools Claude can call, so a natural-language question decides
-which one(s) to use rather than a hand-coded query parser. Requires
-ANTHROPIC_API_KEY (in the environment or a .env file - see .env.example).
+Wires predict.py's predict_total_value, search.py's lookup / comps / deals and
+market_estimate.py's market_value as tools the model can call, so a natural-language
+question decides which one(s) to use rather than a hand-coded query parser.
+
+ASSISTANT_MODEL (environment or .env, see .env.example) picks the model: a local
+Ollama model, free to run (default qwen3.5:9b; needs Ollama running and the model
+pulled), or a Claude model id such as claude-opus-5 (needs ANTHROPIC_API_KEY).
 """
 
 import inspect
 import json
+import os
 import textwrap
 from typing import Optional
 
 import anthropic
+import requests
 from anthropic import beta_tool
 from dotenv import load_dotenv
 
-from src.components import predict, search
+from src.components import market_estimate, predict, search
 from src.components.training import FEATURE_COLUMNS
 
 load_dotenv()
 
-MODEL = "claude-opus-5"
+MODEL = os.getenv("ASSISTANT_MODEL", "qwen3.5:9b")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+# Ollama's default context (4,096 tokens) can't hold the tool schemas plus a few results
+OLLAMA_CONTEXT = 32768
+# A small model can get stuck calling tools; stop it after this many rounds
+MAX_TOOL_ROUNDS = 10
 
 SYSTEM_PROMPT = (
-    "You are a house-value assistant for Mecklenburg County, North Carolina. The "
-    "models estimate a property's 2023 county assessed value (total_value), which "
-    "is a reference point for judging a market price, not a market price itself - "
-    "say so when you give an estimate. predict_total_value also returns "
-    "adjusted_to_today: the estimate scaled by Zillow's Mecklenburg home value index "
-    "since December 2022 - a rough county-wide price change, still not a market "
-    "price for this house. Houses are grouped into areas: CHARLOTTE_1 "
+    "You are a house-value assistant for Mecklenburg County, North Carolina. For what a "
+    "real property is worth or would sell for today, call lookup_property, then "
+    "estimate_market_value with its parcel_id. Give the market estimate with its 80% "
+    "range and the number of sales behind the ratio, and say so when confidence is not "
+    "normal. For a what-if (an addition, an extra bathroom), pass the new values to "
+    "estimate_market_value and give change_vs_unchanged as what the change is worth. "
+    "predict_total_value estimates the 2023 county assessed value (total_value), a "
+    "reference point, not a market price - say so when you give it. Its "
+    "adjusted_to_today only scales that by Zillow's county-wide index, so use it only "
+    "for a described house with no address, and call it rough. Houses are grouped into areas: CHARLOTTE_1 "
     "to CHARLOTTE_15 (parts of Charlotte, numbered north to south), DAVIDSON, "
     "CORNELIUS, HUNTERSVILLE, MINT HILL, MATTHEWS and PINEVILLE. Any feature left "
     "out of a tool call is filled with a county-wide typical value, so estimates "
@@ -252,10 +265,44 @@ def area_stats(area: Optional[str] = None) -> str:
         return _tool_error(e)
 
 
-TOOLS = [lookup_property, area_stats, predict_total_value, find_similar_houses, find_deals]
+@beta_tool
+def estimate_market_value(
+    parcel_id: str,
+    heated_area: Optional[float] = None,
+    bedrooms: Optional[float] = None,
+    bathrooms: Optional[float] = None,
+) -> str:
+    """Estimate what a Mecklenburg property would sell for today, with an 80% range: its
+    2023 assessed value times the median sale / assessed ratio of recent sales in its
+    neighborhood. Use this, not predict_total_value, for today's price of a real property.
+
+    Pass heated_area, bedrooms or bathrooms only for a what-if, such as an addition. The
+    estimate then starts from the model's value of the changed house instead of the
+    county's, and change_vs_unchanged is what the change alone is worth.
+
+    Args:
+        parcel_id: County parcel id from lookup_property, e.g. "20947309".
+        heated_area: New heated square footage, for a what-if.
+        bedrooms: New number of bedrooms, for a what-if.
+        bathrooms: New number of bathrooms (half baths count as 0.5), for a what-if.
+    """
+    changes = {k: v for k, v in [("heated_area", heated_area), ("bedrooms", bedrooms), ("bathrooms", bathrooms)]
+               if v is not None}
+    try:
+        matches = search.lookup_property(parcel_id=parcel_id)
+        if not matches:
+            raise ValueError(f"no property with parcel id {parcel_id}")
+        house = matches[0]
+        result = market_estimate.what_if(house, changes) if changes else market_estimate.market_value(house)
+    except (ValueError, FileNotFoundError) as e:
+        return json.dumps({"error": str(e)})  # a missing file's message says which command makes it
+    return json.dumps(result, default=str)
 
 
-def _run(messages: list) -> anthropic.types.beta.BetaMessage:
+TOOLS = [lookup_property, area_stats, estimate_market_value, predict_total_value, find_similar_houses, find_deals]
+
+
+def _run_claude(messages: list) -> anthropic.types.beta.BetaMessage:
     """Run the tool-use loop over a conversation; return Claude's final message."""
     client = anthropic.Anthropic()
     runner = client.beta.messages.tool_runner(
@@ -264,7 +311,7 @@ def _run(messages: list) -> anthropic.types.beta.BetaMessage:
         system=SYSTEM_PROMPT,
         tools=TOOLS,
         messages=messages,
-        # if Claude Opus 5 declines, the API re-runs the request on a fallback model
+        # if Claude declines, the API re-runs the request on a fallback model
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
     )
@@ -274,21 +321,67 @@ def _run(messages: list) -> anthropic.types.beta.BetaMessage:
     return last
 
 
-def _answer_text(message) -> str:
-    if message.stop_reason == "refusal":
-        return "The request was declined."
-    return next((b.text for b in message.content if b.type == "text"), "")
+def _call_tool(tools, call) -> str:
+    """Run one Ollama tool call; a bad name or bad arguments go back to the model as an error."""
+    name, args = call["function"]["name"], call["function"]["arguments"]
+    if name not in tools:
+        return json.dumps({"error": f"unknown tool {name!r}"})
+    try:
+        return tools[name].call(args)
+    except Exception as e:  # argument validation; the tools catch their own errors
+        return json.dumps({"error": f"bad arguments for {name}: {e}"})
+
+
+def _run_ollama(messages: list) -> dict:
+    """The same tool-use loop on a local Ollama model, with TOOLS' schemas from @beta_tool;
+    return the model's final message."""
+    tools = {t.name: t for t in TOOLS}
+    schemas = [{"type": "function", "function": {"name": d["name"], "description": d["description"],
+                                                 "parameters": d["input_schema"]}}
+               for d in (t.to_dict() for t in TOOLS)]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+    for _ in range(MAX_TOOL_ROUNDS):
+        try:
+            response = requests.post(f"{OLLAMA_URL}/api/chat", timeout=600, json={
+                "model": MODEL, "messages": messages, "tools": schemas, "stream": False,
+                "options": {"num_ctx": OLLAMA_CONTEXT},
+            })
+        except requests.ConnectionError:
+            raise SystemExit(f"Ollama is not running at {OLLAMA_URL}: start it with `ollama serve`, "
+                             f"or set ASSISTANT_MODEL to a Claude model") from None
+        if response.status_code == 404:
+            raise SystemExit(f"{response.json().get('error')} - run `ollama pull {MODEL}`")
+        response.raise_for_status()
+        message = response.json()["message"]
+        messages.append(message)
+        if not message.get("tool_calls"):
+            return message
+        for call in message["tool_calls"]:
+            messages.append({"role": "tool", "tool_name": call["function"]["name"], "content": _call_tool(tools, call)})
+    return {"role": "assistant", "content": f"Stopped after {MAX_TOOL_ROUNDS} rounds of tool calls without an answer."}
+
+
+def _run(messages: list) -> tuple[str, dict]:
+    """Run the tool-use loop over a conversation on MODEL; return the answer text and the
+    assistant message to keep in the history."""
+    if MODEL.startswith("claude"):
+        message = _run_claude(messages)
+        text = ("The request was declined." if message.stop_reason == "refusal"
+                else next((b.text for b in message.content if b.type == "text"), ""))
+        return text, {"role": "assistant", "content": message.content}
+    message = _run_ollama(messages)
+    return message["content"], {"role": "assistant", "content": message["content"]}
 
 
 def ask(question: str) -> str:
-    """Run one natural-language question through the tool-use loop; return Claude's final answer text."""
-    return _answer_text(_run([{"role": "user", "content": question}]))
+    """Run one natural-language question through the tool-use loop; return the final answer text."""
+    return _run([{"role": "user", "content": question}])[0]
 
 
 def chat():
-    """Multi-turn chat in the terminal, so Claude can ask follow-up questions (e.g. which of
-    several address matches). Only the final answer of each turn is kept in the history;
-    Claude re-calls a tool if it needs an earlier result again. Empty line or Ctrl-D quits."""
+    """Multi-turn chat in the terminal, so the model can ask follow-up questions (e.g. which
+    of several address matches). Only the final answer of each turn is kept in the history;
+    the model re-calls a tool if it needs an earlier result again. Empty line or Ctrl-D quits."""
     messages = []
     while True:
         try:
@@ -298,9 +391,9 @@ def chat():
         if not question:
             break
         messages.append({"role": "user", "content": question})
-        reply = _run(messages)
-        messages.append({"role": "assistant", "content": reply.content})
-        print(f"\nassistant> {_answer_text(reply)}")
+        text, reply = _run(messages)
+        messages.append(reply)
+        print(f"\nassistant> {text}")
 
 
 if __name__ == "__main__":
