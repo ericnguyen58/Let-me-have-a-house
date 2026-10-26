@@ -1,9 +1,9 @@
 """Estimate today's market price from the 2023 assessed value with a sales ratio, and
 backtest it.
 
-Nothing else in the project imports this module, so it can be removed without touching
-the rest of the pipeline (its example run uses search.lookup_property, and
-chain_backtest refits the model through training.py and finetune.py).
+assistant.py's estimate_market_value tool calls market_value and what_if; nothing else
+imports this module (its example run uses search.lookup_property, and chain_backtest
+refits the model through training.py and finetune.py).
 
 Sales ratio method: for recent arms-length sales, ratio = sale_price / total_value (the
 2023 assessed value). A house's market estimate is its assessed value times the median
@@ -326,11 +326,21 @@ def market_value(house, as_of=None):
     }
 
 
+def what_if(house, changes, as_of=None):
+    """market_value for `house` with `changes` applied (e.g. {"bedrooms": 5}) and no county
+    value, since that doesn't reflect the change. `change_vs_unchanged` compares it with
+    the same house, unchanged, through the same model, so it is what the change alone is
+    worth."""
+    unchanged = market_value(dict(house, total_value=None), as_of)
+    result = market_value(dict(house, total_value=None, **changes), as_of)
+    result["change_vs_unchanged"] = round(result["market_estimate"] - unchanged["market_estimate"], 2)
+    return result
+
+
 def check_test_houses():
     """market_value for config `market_test_houses` (two houses per path), with a flag
-    where a house no longer takes the path in its `expect`. A what-if is the house with
-    its `changes` and no county value; `change_vs_unchanged` compares it with the same
-    house, unchanged, through the same model, so it is what the change alone is worth."""
+    where a house no longer takes the path in its `expect`. A what-if goes through
+    what_if."""
     from src.components.search import lookup_property
 
     rows = []
@@ -342,10 +352,8 @@ def check_test_houses():
             house = matches[0]
             row = {"group": group, "address": spec["address"]}
             if "changes" in spec:
-                unchanged = market_value(dict(house, total_value=None))
-                result = market_value(dict(house, total_value=None, **spec["changes"]))
+                result = what_if(house, spec["changes"])
                 row["changes"] = ", ".join(f"{k} {house[k]:g} -> {v:g}" for k, v in spec["changes"].items())
-                row["change_vs_unchanged"] = round(result["market_estimate"] - unchanged["market_estimate"], 2)
             else:
                 result = market_value(house)
             path = {k: result[k] for k in spec["expect"]}
