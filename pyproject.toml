@@ -33,7 +33,9 @@ package = false
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "nbconvert>=7.17.1",
+    "pytest>=9.2.0",
     "ruff>=0.17.3",
 ]
 
@@ -49,3 +51,11 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 # lambdas passed to .pipe() run inside the loop iteration that defines them
 "src/components/evaluating.py" = ["B023"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+pythonpath = ["."]
+# importlib: the repository root has an __init__.py, which would make pytest import the
+# tests under the repository folder's name
+addopts = ["--import-mode=importlib", "-ra"]
+markers = ["data: needs the local data/ and output/models/ files; skipped when they are missing (as in CI)"]
