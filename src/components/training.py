@@ -6,7 +6,7 @@ on a validation split carved from the training rows it beat the tuned random for
 on every metric (MAE $29,407 vs $33,066, RMSE $78,464 vs $88,876), and its saved
 models are a few MB instead of over 1GB - so 2 models are trained. The random forest
 and xgboost setups are kept in build_search_estimators and can be switched back on by
-adding them to MODEL_TYPES.
+adding them to MODEL_TYPES (xgboost after `uv sync --group xgboost`).
 
 - with_neighborhood_price: every feature, including neighborhood_median_price_per_sqft
 - without_neighborhood_price: the same minus that column. The neighborhood price
@@ -50,7 +50,6 @@ from sklearn.metrics import (
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from xgboost import XGBRegressor
 
 from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
 from src.utils.common import read_dataframe, resolve_path, save_dataframe
@@ -96,7 +95,8 @@ FEATURE_SETS = {
     "without_neighborhood_price": [c for c in FEATURE_COLUMNS if c != NEIGHBORHOOD_PRICE],
 }
 # Model types trained, validated and served. "random_forest" and "xgboost" are also
-# available (see build_search_estimators) but left out for now.
+# available (see build_search_estimators) but left out for now; xgboost also needs
+# `uv sync --group xgboost`.
 MODEL_TYPES = ["hist_gradient_boosting"]
 # The metric model selection optimizes, here and in finetune.py.
 SELECTION_METRIC = "mae"
@@ -191,7 +191,10 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
 }
 
 
-def build_search_estimators(random_state, training_cfg):
+def build_search_estimators(random_state, training_cfg, model_types=MODEL_TYPES):
+    """A hyperparameter search for each of `model_types`. xgboost is imported only when it
+    is asked for: it is an optional dependency (`uv sync --group xgboost`), left out of the
+    default install and the Docker image while it isn't in MODEL_TYPES."""
     # n_jobs=1 on each base estimator, n_jobs=-1 on the search itself: parallelizes across
     # search candidates/CV folds (separate worker processes) instead of nesting parallelism
     # inside each fit. Also required for xgboost specifically - on this xgboost 3.4.1 /
@@ -207,9 +210,15 @@ def build_search_estimators(random_state, training_cfg):
         n_jobs=-1,
         refit=True,
     )
-    return {
+
+    def xgboost():
+        from xgboost import XGBRegressor
+
+        return XGBRegressor(random_state=random_state, n_jobs=1, tree_method="approx"), XGBOOST_PARAM_DISTRIBUTIONS
+
+    estimators = {
         # no n_jobs: it uses OpenMP threads, which joblib limits per search worker
-        "hist_gradient_boosting": RandomizedSearchCV(
+        "hist_gradient_boosting": lambda: (
             HistGradientBoostingRegressor(
                 random_state=random_state,
                 max_iter=3000,
@@ -218,19 +227,14 @@ def build_search_estimators(random_state, training_cfg):
                 n_iter_no_change=50,
             ),
             HIST_GRADIENT_BOOSTING_PARAM_DISTRIBUTIONS,
-            **search_kwargs,
         ),
-        "random_forest": RandomizedSearchCV(
+        "random_forest": lambda: (
             RandomForestRegressor(random_state=random_state, n_jobs=1),
             RANDOM_FOREST_PARAM_DISTRIBUTIONS,
-            **search_kwargs,
         ),
-        "xgboost": RandomizedSearchCV(
-            XGBRegressor(random_state=random_state, n_jobs=1, tree_method="approx"),
-            XGBOOST_PARAM_DISTRIBUTIONS,
-            **search_kwargs,
-        ),
+        "xgboost": xgboost,
     }
+    return {name: RandomizedSearchCV(*estimators[name](), **search_kwargs) for name in model_types}
 
 
 def train_models(train, test, training_cfg):

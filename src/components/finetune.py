@@ -63,7 +63,7 @@ def best_previous_model(reports_path):
 
 def build_model(model_name, params, training_cfg):
     """The same estimator training.py searches over, with the given settings."""
-    search = build_search_estimators(training_cfg["random_state"], training_cfg)[model_name]
+    search = build_search_estimators(training_cfg["random_state"], training_cfg, [model_name])[model_name]
     model = clone(search.estimator).set_params(**params)
     # training.py runs each fit single-threaded and parallelizes the search instead; a
     # single random forest fit can use every core. xgboost stays at n_jobs=1, which it

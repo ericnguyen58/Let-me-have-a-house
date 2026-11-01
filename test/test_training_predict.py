@@ -1,6 +1,8 @@
 """Train on the synthetic table with training.py's own code, save the artifacts, and load
 them back through predict.py, as the real pipeline does."""
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -56,3 +58,9 @@ def test_unknown_feature_set_or_model_is_rejected():
 
 def test_dollar_mae_reads_log_values():
     assert training.dollar_mae(np.log1p([100.0, 200.0]), np.log1p([110.0, 180.0])) == pytest.approx(15)
+
+
+def test_only_the_model_types_in_use_are_built():
+    searches = training.build_search_estimators(0, {"search_iter": 1, "cv_folds": 2})
+    assert list(searches) == training.MODEL_TYPES
+    assert "xgboost" not in sys.modules  # an optional dependency, imported only when asked for
