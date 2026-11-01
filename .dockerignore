@@ -1,0 +1,10 @@
+# Allowlist: only what the image needs, so data, models, .env and the local venv never
+# reach the build context
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!config/
+!src/
+!api/
+**/__pycache__
