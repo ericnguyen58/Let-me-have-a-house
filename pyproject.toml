@@ -38,6 +38,7 @@ notebooks = [
     "matplotlib>=3.11.1",
     "seaborn>=0.13.2",
     "shap>=0.52.0",
+    "umap-learn>=0.5.12",
 ]
 # not installed by default: only needed if "xgboost" is added to training.MODEL_TYPES
 xgboost = [
