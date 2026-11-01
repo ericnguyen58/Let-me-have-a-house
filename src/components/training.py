@@ -6,7 +6,7 @@ on a validation split carved from the training rows it beat the tuned random for
 on every metric (MAE $29,407 vs $33,066, RMSE $78,464 vs $88,876), and its saved
 models are a few MB instead of over 1GB - so 2 models are trained. The random forest
 and xgboost setups are kept in build_search_estimators and can be switched back on by
-adding them to MODEL_TYPES.
+adding them to MODEL_TYPES (xgboost after `uv sync --group xgboost`).
 
 - with_neighborhood_price: every feature, including neighborhood_median_price_per_sqft
 - without_neighborhood_price: the same minus that column. The neighborhood price
@@ -33,6 +33,7 @@ Hyperparameters are tuned per feature set per model type via RandomizedSearchCV
 
 import json
 import os
+
 import joblib
 import numpy as np
 import pandas as pd
@@ -49,7 +50,6 @@ from sklearn.metrics import (
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from xgboost import XGBRegressor
 
 from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
 from src.utils.common import read_dataframe, resolve_path, save_dataframe
@@ -63,13 +63,31 @@ SALE_DERIVED_FEATURES = [NEIGHBORHOOD_PRICE, "neighborhood_sale_count", "price_m
 
 CATEGORICAL_FEATURES = ["land_use_class", "area"]
 NUMERIC_FEATURES = [
-    "acreage", "year_built", "heated_area", "bedrooms", "bathrooms",
-    "latitude", "longitude", "property_age",
-    "neighborhood_median_price_per_sqft", "neighborhood_sale_count", "price_momentum",
-    "education_nearest_miles", "places_count", "health_care_share", "activity_share",
-    "emergency_fire_miles", "emergency_police_miles", "emergency_medical_miles",
-    "elementary_school_score", "middle_school_score", "high_school_score",
-    "violent_crime_rate", "property_crime_rate", "in_floodplain", "light_rail_miles",
+    "acreage",
+    "year_built",
+    "heated_area",
+    "bedrooms",
+    "bathrooms",
+    "latitude",
+    "longitude",
+    "property_age",
+    "neighborhood_median_price_per_sqft",
+    "neighborhood_sale_count",
+    "price_momentum",
+    "education_nearest_miles",
+    "places_count",
+    "health_care_share",
+    "activity_share",
+    "emergency_fire_miles",
+    "emergency_police_miles",
+    "emergency_medical_miles",
+    "elementary_school_score",
+    "middle_school_score",
+    "high_school_score",
+    "violent_crime_rate",
+    "property_crime_rate",
+    "in_floodplain",
+    "light_rail_miles",
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 FEATURE_SETS = {
@@ -77,7 +95,8 @@ FEATURE_SETS = {
     "without_neighborhood_price": [c for c in FEATURE_COLUMNS if c != NEIGHBORHOOD_PRICE],
 }
 # Model types trained, validated and served. "random_forest" and "xgboost" are also
-# available (see build_search_estimators) but left out for now.
+# available (see build_search_estimators) but left out for now; xgboost also needs
+# `uv sync --group xgboost`.
 MODEL_TYPES = ["hist_gradient_boosting"]
 # The metric model selection optimizes, here and in finetune.py.
 SELECTION_METRIC = "mae"
@@ -94,14 +113,12 @@ def load_training_data(features_path):
 def test_address_parcels():
     """Parcel ids of config `test_addresses`, the houses every example and check uses."""
     from src.components.search import lookup_property  # search imports this module
-    return [row["parcel_id"] for address in load_config().get("test_addresses", [])
-            for row in lookup_property(address)]
+
+    return [row["parcel_id"] for address in load_config().get("test_addresses", []) for row in lookup_property(address)]
 
 
 def split_with_aggregates(df, training_cfg):
-    train, test = train_test_split(
-        df, test_size=training_cfg["test_size"], random_state=training_cfg["random_state"]
-    )
+    train, test = train_test_split(df, test_size=training_cfg["test_size"], random_state=training_cfg["random_state"])
     # the test addresses always go to the test set, so their estimates are real tests
     moved = train["parcel_id"].isin(test_address_parcels())
     train, test = train[~moved], pd.concat([test, train[moved]])
@@ -113,18 +130,24 @@ def split_with_aggregates(df, training_cfg):
 
 
 def build_preprocessor(features):
-    numeric_pipeline = Pipeline([
-        ("impute", SimpleImputer(strategy="median")),
-        ("scale", StandardScaler()),
-    ])
-    categorical_pipeline = Pipeline([
-        ("impute", SimpleImputer(strategy="most_frequent")),
-        ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-    ])
-    return ColumnTransformer([
-        ("num", numeric_pipeline, [c for c in features if c in NUMERIC_FEATURES]),
-        ("cat", categorical_pipeline, [c for c in features if c in CATEGORICAL_FEATURES]),
-    ])
+    numeric_pipeline = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+        ]
+    )
+    categorical_pipeline = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+        ]
+    )
+    return ColumnTransformer(
+        [
+            ("num", numeric_pipeline, [c for c in features if c in NUMERIC_FEATURES]),
+            ("cat", categorical_pipeline, [c for c in features if c in CATEGORICAL_FEATURES]),
+        ]
+    )
 
 
 def dollar_mae(y_log_true, y_log_pred):
@@ -168,7 +191,10 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
 }
 
 
-def build_search_estimators(random_state, training_cfg):
+def build_search_estimators(random_state, training_cfg, model_types=MODEL_TYPES):
+    """A hyperparameter search for each of `model_types`. xgboost is imported only when it
+    is asked for: it is an optional dependency (`uv sync --group xgboost`), left out of the
+    default install and the Docker image while it isn't in MODEL_TYPES."""
     # n_jobs=1 on each base estimator, n_jobs=-1 on the search itself: parallelizes across
     # search candidates/CV folds (separate worker processes) instead of nesting parallelism
     # inside each fit. Also required for xgboost specifically - on this xgboost 3.4.1 /
@@ -177,27 +203,38 @@ def build_search_estimators(random_state, training_cfg):
     # segfaults even single-threaded (verified via bisection); tree_method="approx" + n_jobs=1
     # is the combination that survives.
     search_kwargs = dict(
-        n_iter=training_cfg["search_iter"], cv=training_cfg["cv_folds"],
-        scoring=make_scorer(dollar_mae, greater_is_better=False), random_state=random_state, n_jobs=-1, refit=True,
+        n_iter=training_cfg["search_iter"],
+        cv=training_cfg["cv_folds"],
+        scoring=make_scorer(dollar_mae, greater_is_better=False),
+        random_state=random_state,
+        n_jobs=-1,
+        refit=True,
     )
-    return {
+
+    def xgboost():
+        from xgboost import XGBRegressor
+
+        return XGBRegressor(random_state=random_state, n_jobs=1, tree_method="approx"), XGBOOST_PARAM_DISTRIBUTIONS
+
+    estimators = {
         # no n_jobs: it uses OpenMP threads, which joblib limits per search worker
-        "hist_gradient_boosting": RandomizedSearchCV(
+        "hist_gradient_boosting": lambda: (
             HistGradientBoostingRegressor(
-                random_state=random_state, max_iter=3000,
-                early_stopping=True, validation_fraction=0.1, n_iter_no_change=50,
+                random_state=random_state,
+                max_iter=3000,
+                early_stopping=True,
+                validation_fraction=0.1,
+                n_iter_no_change=50,
             ),
-            HIST_GRADIENT_BOOSTING_PARAM_DISTRIBUTIONS, **search_kwargs,
+            HIST_GRADIENT_BOOSTING_PARAM_DISTRIBUTIONS,
         ),
-        "random_forest": RandomizedSearchCV(
+        "random_forest": lambda: (
             RandomForestRegressor(random_state=random_state, n_jobs=1),
-            RANDOM_FOREST_PARAM_DISTRIBUTIONS, **search_kwargs,
+            RANDOM_FOREST_PARAM_DISTRIBUTIONS,
         ),
-        "xgboost": RandomizedSearchCV(
-            XGBRegressor(random_state=random_state, n_jobs=1, tree_method="approx"),
-            XGBOOST_PARAM_DISTRIBUTIONS, **search_kwargs,
-        ),
+        "xgboost": xgboost,
     }
+    return {name: RandomizedSearchCV(*estimators[name](), **search_kwargs) for name in model_types}
 
 
 def train_models(train, test, training_cfg):

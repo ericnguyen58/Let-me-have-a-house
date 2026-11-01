@@ -14,21 +14,42 @@ each parcel gets an `area` (see assign_area) so houses can be compared across to
 and parts of Charlotte.
 """
 
-import json
 import re
 from datetime import datetime
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import KNeighborsClassifier
+
 from src.utils.common import resolve_path, save_dataframe
 from src.utils.load_config import load_config
 
 COMMON_COLUMNS = [
-    "county", "parcel_id", "owner_name", "situs_street_num", "situs_street_name", "situs_city", "situs_zip",
-    "sale_price", "sale_date", "sale_qualification", "deed_book", "deed_page", "land_value", "building_value", "total_value",
-    "acreage", "land_use_class", "neighborhood_code", "year_built", "heated_area", "bedrooms", "bathrooms",
-    "latitude", "longitude",
+    "county",
+    "parcel_id",
+    "owner_name",
+    "situs_street_num",
+    "situs_street_name",
+    "situs_city",
+    "situs_zip",
+    "sale_price",
+    "sale_date",
+    "sale_qualification",
+    "deed_book",
+    "deed_page",
+    "land_value",
+    "building_value",
+    "total_value",
+    "acreage",
+    "land_use_class",
+    "neighborhood_code",
+    "year_built",
+    "heated_area",
+    "bedrooms",
+    "bathrooms",
+    "latitude",
+    "longitude",
 ]
 
 # Canonical land-use buckets. County taxonomies don't line up exactly, so this is a
@@ -71,13 +92,51 @@ QUALIFIED_SALE = "Qualified"
 # non-individual-owned properties, which are noisier comps for a homebuyer-focused dataset.
 # Missing/blank owner_name is left in (can't confirm either way) rather than dropped.
 NON_INDIVIDUAL_OWNER_KEYWORDS = [
-    "LLC", "L L C", "INC", "INCORPORATED", "CORP", " CO ", " CO,", " CO.", "COMPANY",
-    "LP", "LLP", "LTD", "TRUST", "ESTATE OF", "BANK", "CHURCH", "ASSOC", "ASSN",
-    "PARTNERSHIP", "PROPERTIES", "INVESTMENTS", "HOLDINGS", "MGMT", "MANAGEMENT",
-    "FOUNDATION", "MINISTR", "HOMEOWNERS", " HOA", "AUTHORITY", "DEVELOPMENT",
-    "BUILDERS", "CONSTRUCTION", "REALTY", "ENTERPRISES", "VENTURES", "CAPITAL",
-    "UNIVERSITY", "HOSPITAL", "SCHOOL", "GOVERNMENT", "CITY OF", "COUNTY OF", "STATE OF",
-    "UNITED STATES", "HABITAT FOR HUMANITY",
+    "LLC",
+    "L L C",
+    "INC",
+    "INCORPORATED",
+    "CORP",
+    " CO ",
+    " CO,",
+    " CO.",
+    "COMPANY",
+    "LP",
+    "LLP",
+    "LTD",
+    "TRUST",
+    "ESTATE OF",
+    "BANK",
+    "CHURCH",
+    "ASSOC",
+    "ASSN",
+    "PARTNERSHIP",
+    "PROPERTIES",
+    "INVESTMENTS",
+    "HOLDINGS",
+    "MGMT",
+    "MANAGEMENT",
+    "FOUNDATION",
+    "MINISTR",
+    "HOMEOWNERS",
+    " HOA",
+    "AUTHORITY",
+    "DEVELOPMENT",
+    "BUILDERS",
+    "CONSTRUCTION",
+    "REALTY",
+    "ENTERPRISES",
+    "VENTURES",
+    "CAPITAL",
+    "UNIVERSITY",
+    "HOSPITAL",
+    "SCHOOL",
+    "GOVERNMENT",
+    "CITY OF",
+    "COUNTY OF",
+    "STATE OF",
+    "UNITED STATES",
+    "HABITAT FOR HUMANITY",
 ]
 NON_INDIVIDUAL_OWNER_PATTERN = "|".join(re.escape(k) for k in NON_INDIVIDUAL_OWNER_KEYWORDS)
 
@@ -93,6 +152,12 @@ RESIDENTIAL_LAND_USE_CLASSES = ["single_family", "condo", "townhouse"]
 # missing (can't verify either way) are left in, same policy as blank owner_name.
 MIN_HEATED_AREA = 300
 MAX_HEATED_AREA = 10_000
+
+# More bedrooms than this is a data entry error: the largest real counts in the county file
+# are 12 (in 4,773 and 6,928 sqft houses), while the 6 rows above 20 have 23 to 334 bedrooms
+# in 1,528 to 6,974 sqft (parcel 18909409: 334 bedrooms, 1 bathroom, 2,202 sqft). Rows with
+# bedrooms missing are left in, as with heated_area.
+MAX_BEDROOMS = 20
 
 # UNINC is unincorporated land scattered between towns, and STALLINGS is 52 parcels of a
 # town that sits mostly in Union County - neither works as an area of its own, so each
@@ -113,9 +178,19 @@ MAX_AREA_SIZE = 30_000
 # concatenation with the other counties these columns end up as mixed-type `object`
 # columns unless coerced.
 NUMERIC_COLUMNS = [
-    "situs_street_num", "situs_zip", "sale_price", "land_value", "building_value",
-    "total_value", "acreage", "year_built", "heated_area", "bedrooms", "bathrooms",
-    "latitude", "longitude",
+    "situs_street_num",
+    "situs_zip",
+    "sale_price",
+    "land_value",
+    "building_value",
+    "total_value",
+    "acreage",
+    "year_built",
+    "heated_area",
+    "bedrooms",
+    "bathrooms",
+    "latitude",
+    "longitude",
 ]
 
 
@@ -133,7 +208,10 @@ NUMERIC_COLUMNS = [
 def load_mecklenburg(raw_path):
     return pd.read_csv(
         raw_path + "merklenburg/Cama_Table_transformed.csv",
-        sep=";", encoding="utf-8-sig", decimal=",", low_memory=False,
+        sep=";",
+        encoding="utf-8-sig",
+        decimal=",",
+        low_memory=False,
     )
 
 
@@ -166,32 +244,34 @@ def load_mecklenburg(raw_path):
 
 
 def meck_to_common(df):
-    out = pd.DataFrame({
-        "county": "Mecklenburg",
-        "parcel_id": df["parcelid"],
-        "owner_name": (df["ownrlstnme"].fillna("") + " " + df["ownrfrstnme"].fillna("")).str.strip(),
-        "situs_street_num": df["streetnumber"],
-        "situs_street_name": df["streetname"],
-        "situs_city": df["loccity"],
-        "situs_zip": pd.NA,  # only the owner's mailing zip is present, not situs
-        "sale_price": df["saleprice"],
-        "sale_date": pd.to_datetime(df["saledate"], format="%d/%m/%y %H:%M", errors="coerce"),
-        "sale_qualification": df["naldesc"].str.strip(),
-        "deed_book": df["deed_book"],
-        "deed_page": df["deed_page"],
-        "land_value": df["totlandval"],
-        "building_value": df["totalbldgval"],
-        "total_value": df["totalvalue"],
-        "acreage": df["gisacres"],
-        "land_use_class": df["landuse_description"],
-        "neighborhood_code": df["neighborhood"],
-        "year_built": df["yearbuilt"],
-        "heated_area": df["heatedarea"],
-        "bedrooms": df["bedrooms"],
-        "bathrooms": df["fullbath"] + 0.5 * df["halfbath"],
-        "latitude": df["xcoord"],   # NB: this county's export has x/y swapped vs. the usual lon/lat convention
-        "longitude": df["ycoord"],  # (xcoord holds ~35 = latitude, ycoord holds ~-80 = longitude for Mecklenburg)
-    })
+    out = pd.DataFrame(
+        {
+            "county": "Mecklenburg",
+            "parcel_id": df["parcelid"],
+            "owner_name": (df["ownrlstnme"].fillna("") + " " + df["ownrfrstnme"].fillna("")).str.strip(),
+            "situs_street_num": df["streetnumber"],
+            "situs_street_name": df["streetname"],
+            "situs_city": df["loccity"],
+            "situs_zip": pd.NA,  # only the owner's mailing zip is present, not situs
+            "sale_price": df["saleprice"],
+            "sale_date": pd.to_datetime(df["saledate"], format="%d/%m/%y %H:%M", errors="coerce"),
+            "sale_qualification": df["naldesc"].str.strip(),
+            "deed_book": df["deed_book"],
+            "deed_page": df["deed_page"],
+            "land_value": df["totlandval"],
+            "building_value": df["totalbldgval"],
+            "total_value": df["totalvalue"],
+            "acreage": df["gisacres"],
+            "land_use_class": df["landuse_description"],
+            "neighborhood_code": df["neighborhood"],
+            "year_built": df["yearbuilt"],
+            "heated_area": df["heatedarea"],
+            "bedrooms": df["bedrooms"],
+            "bathrooms": df["fullbath"] + 0.5 * df["halfbath"],
+            "latitude": df["xcoord"],  # NB: this county's export has x/y swapped vs. the usual lon/lat convention
+            "longitude": df["ycoord"],  # (xcoord holds ~35 = latitude, ycoord holds ~-80 = longitude for Mecklenburg)
+        }
+    )
     return out[COMMON_COLUMNS]
 
 
@@ -286,15 +366,18 @@ def meck_to_common(df):
 #     ).reset_index()
 #     return first.merge(agg, on="REAL_ESTATE_ID")
 
-def nc_places_map(path,cfg):
+
+def nc_places_map(path, cfg):
     poi = gpd.read_parquet(path)
-    df = pd.DataFrame({
-        "lon": poi.geometry.x,
-        "lat": poi.geometry.y,
-        "name": poi["names"].str["primary"],
-        "cat": poi["taxonomy"].str["primary"],
-    })
-    return df.to_csv(resolve_path(cfg,"processed_data")+"nc_places_map.csv", index=False)
+    df = pd.DataFrame(
+        {
+            "lon": poi.geometry.x,
+            "lat": poi.geometry.y,
+            "name": poi["names"].str["primary"],
+            "cat": poi["taxonomy"].str["primary"],
+        }
+    )
+    return df.to_csv(resolve_path(cfg, "processed_data") + "nc_places_map.csv", index=False)
 
 
 # def wake_to_common(df):
@@ -396,14 +479,17 @@ def clean_properties(df):
     df = df[df["land_use_class"].isin(RESIDENTIAL_LAND_USE_CLASSES)]
 
     bad_heated_area = df["heated_area"].notna() & ~df["heated_area"].between(MIN_HEATED_AREA, MAX_HEATED_AREA)
-    df = df[~bad_heated_area]
+    df = df[~bad_heated_area & ~(df["bedrooms"] > MAX_BEDROOMS)]
 
     # Individual-owner filter needs owner_name, so runs before it (and situs_zip, unused
     # downstream) are dropped.
     df = df[is_individual_owner(df["owner_name"])].copy()
-    df = df.drop(columns=["owner_name",
-                          # "situs_zip"
-                          ])
+    df = df.drop(
+        columns=[
+            "owner_name",
+            # "situs_zip"
+        ]
+    )
 
     return df
 
@@ -439,8 +525,14 @@ def assign_area(df):
 
     in_city = df["area"] == SPLIT_CITY
     has_nbhd = in_city & df["neighborhood_code"].notna()
-    nbhds = df[has_nbhd].groupby("neighborhood_code").agg(
-        latitude=("latitude", "mean"), longitude=("longitude", "mean"), n=("parcel_id", "size"),
+    nbhds = (
+        df[has_nbhd]
+        .groupby("neighborhood_code")
+        .agg(
+            latitude=("latitude", "mean"),
+            longitude=("longitude", "mean"),
+            n=("parcel_id", "size"),
+        )
     )
     parts = sorted(median_split(nbhds, MAX_AREA_SIZE), key=lambda part: -part["latitude"].mean())
     nbhd_area = {code: f"{SPLIT_CITY}_{i}" for i, part in enumerate(parts, 1) for code in part.index}
@@ -457,7 +549,7 @@ def run():
     cfg = load_config()
     raw_path = resolve_path(cfg, "raw_data")
     processed_path = resolve_path(cfg, "processed_data")
-    nc_places_map(raw_path+ "NC parquet/nc_places.parquet",cfg)
+    nc_places_map(raw_path + "NC parquet/nc_places.parquet", cfg)
     combined = merge_all_counties(raw_path)
     clean = assign_area(clean_properties(combined))
     save_dataframe(clean, processed_path, "properties_clean.csv")
