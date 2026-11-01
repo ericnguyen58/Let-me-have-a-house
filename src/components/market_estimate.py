@@ -48,7 +48,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from src.utils.common import read_dataframe, resolve_path, save_dataframe
+from src.utils.common import read_dataframe_cached, resolve_path, save_dataframe
 from src.utils.load_config import load_config
 
 RATIO_WINDOWS_MONTHS = [12, 24, 36]
@@ -93,16 +93,16 @@ OOF_FILE = "out_of_fold_estimates.csv"
 def load_sales(features_path):
     """Arms-length sales with a usable price and assessed value, dated no later than
     today (the county file has a few sales dated in the future)."""
-    df = read_dataframe(features_path, "properties_features.csv")
-    df["sale_date"] = pd.to_datetime(df["sale_date"], format="mixed")
+    df = read_dataframe_cached(features_path, "properties_features.csv")  # shared with search.py
+    sale_date = pd.to_datetime(df["sale_date"], format="mixed")
     sales = df[
         df["arms_length_sale"].astype(bool)
         & df["sale_price"].gt(0)
         & df["total_value"].gt(0)
         & df["heated_area"].gt(0)
         & (df["sale_price"] / df["heated_area"] >= MIN_PRICE_PER_SQFT)
-        & (df["sale_date"] <= pd.Timestamp(datetime.now()))
-    ].copy()
+        & (sale_date <= pd.Timestamp(datetime.now()))
+    ].assign(sale_date=sale_date)
     sales["ratio"] = sales["sale_price"] / sales["total_value"]
     return sales
 
@@ -324,6 +324,20 @@ def market_value(house, as_of=None):
         "confidence": {"neighborhood": "normal", "zillow_county": "low"}.get(method, "lower"),
         "as_of": as_of.date().isoformat(),
     }
+
+
+def market_values(houses, as_of=None):
+    """market_value's market_estimate for every row of `houses` (feature-table rows) at
+    once, without ranges: the same starting value and ratio rules, vectorized. A house
+    without a county value, or a likely partial assessment, needs its out-of-fold
+    estimate; one not in that file gets NaN instead of the production model's."""
+    as_of = pd.Timestamp(as_of or datetime.now()).normalize().date().isoformat()
+    county = houses["total_value"].where(houses["total_value"] > 0)
+    model = houses["parcel_id"].map(_out_of_fold()[1])
+    use_model = county.isna() | ((houses["year_built"] >= ASSESSMENT_YEAR) & (county < PARTIAL_ASSESSMENT_SHARE * model))
+    county_ratio = apply_ratios(_pricing("county", as_of)[0], houses)[0]
+    model_ratio = apply_ratios(_pricing("model", as_of)[0], houses)[0]
+    return (county * county_ratio).where(~use_model, model * model_ratio)
 
 
 def what_if(house, changes, as_of=None):

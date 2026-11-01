@@ -1,3 +1,4 @@
+import functools
 import os
 
 import pandas as pd
@@ -20,3 +21,10 @@ def save_dataframe(df, path, filename):
 def read_dataframe(path, filename, **kwargs):
     """Read `path/filename` as csv. Extra kwargs are forwarded to pd.read_csv."""
     return pd.read_csv(os.path.join(path, filename),low_memory=False, **kwargs)
+
+
+@functools.lru_cache(maxsize=None)
+def read_dataframe_cached(path, filename):
+    """read_dataframe, read once per process and shared by every caller, which must not
+    modify it."""
+    return read_dataframe(path, filename)

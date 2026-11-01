@@ -64,11 +64,11 @@ as described below.
 | 5. Evaluation | `src/components/evaluating.py` | 10-house validation, drop-column test (one split) and same house by area implemented. Repeated splits, noise column and baseline model not yet complete. |
 | 5b. Retrain best model | `src/components/finetune.py` | Implemented |
 | 6. Prediction | `src/components/predict.py` | Implemented |
-| 7. Search (property lookup, area stats, similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
+| 7. Search (property lookup, area stats, houses matching a buyer's criteria, similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
 | 8. Assistant (tool use, local Qwen3.5-9B or Claude) | `src/components/assistant.py` | Implemented |
 | Market estimate (sales ratio), `market_value` (model chain) and backtests | `src/components/market_estimate.py` | Implemented. Used by the assistant's `estimate_market_value` tool. |
 | Pipeline orchestration | `src/pipeline/` | Not yet complete (empty package) |
-| API | `api/main.py` | Not yet complete (empty file) |
+| Chat UI v1.0 | `api/main.py`, `api/static/index.html` | Implemented: a web page for the assistant |
 | Docker | `Dockerfile` | Not yet complete (IDE placeholder that runs `top`) |
 
 ## Current models
@@ -159,6 +159,9 @@ market_estimate.py
         |
         v
 assistant.py                        (the model calls predict/search/market_value as tools)
+        |
+        v
+api/main.py                         (chat UI v1.0 in the browser)
 ```
 
 ## Setup
@@ -200,6 +203,7 @@ uv run python -m src.components.predict              # example estimates
 uv run python -m src.components.search               # example comps and deals
 uv run python -m src.components.assistant "your question here"
 uv run python -m src.components.assistant             # multi-turn chat
+uv run python -m api.main                             # chat UI v1.0 at http://127.0.0.1:8000
 uv run python -m src.components.market_estimate       # backtest today's-price methods
 uv run python -m src.components.market_estimate calibrate    # out-of-fold model estimates for market_value (about 15 minutes)
 uv run python -m src.components.market_estimate houses       # market_value for the test houses, two per path
@@ -264,6 +268,10 @@ Small helpers used by every stage:
 - `read_dataframe(path, filename, **kwargs)`: reads a CSV with
   `low_memory=False` (avoids mixed-type column warnings). Extra arguments are
   passed to `pd.read_csv`.
+- `read_dataframe_cached(path, filename)`: `read_dataframe`, read once per
+  process. `search.py` and `market_estimate.load_sales` share one copy of the
+  145 MB feature table this way, instead of each parsing it, so callers must
+  not modify the result.
 
 ---
 
@@ -797,6 +805,10 @@ Mecklenburg.
   `price_momentum`, distance to the nearest school and emergency department,
   places count, and median $/sq ft of arms-length sales. An unknown area
   raises `ValueError`.
+- `typical_features(area)`: the median of every numeric model feature over
+  the area's houses. The assistant uses these for a house described without
+  an address, so its location features come from its area instead of the
+  whole county. An unknown area raises `ValueError`.
 
 - `find_similar_houses(features, k=5, feature_set="with_neighborhood_price")`:
   returns the `k` houses closest to the given features, measured after
@@ -806,6 +818,34 @@ Mecklenburg.
   and the distance. The results come from any area. When the query leaves many
   features out, the missing ones are filled with typical values, and the
   closest houses can be in a different area from the one given.
+- `find_houses(max_price=None, area=None, land_use_class=None, min_bedrooms=None, min_bathrooms=None, min_heated_area=None, min_year_built=None, min_school_score=None, max_light_rail_miles=None, sort_by="school_score", top_n=5)`:
+  recommendations for a buyer. It returns existing houses that match the
+  criteria, priced at today's estimated market value. These come from the
+  county record, not listings, so they are not necessarily for sale.
+  - `matches`: how many houses match.
+  - `by_area`: per area, the number of matches and their median estimated
+    price, $/sq ft, school score and light rail distance, most matches first.
+    This answers where to look.
+  - `houses`: the `top_n` houses by `sort_by`: `school_score` (best first),
+    `year_built` (newest), `heated_area` (largest) or `estimated_price`
+    (cheapest). Each has its parcel ID, address, area, type, bedrooms,
+    bathrooms, heated area, year built, estimated price, school score and light
+    rail distance.
+  - `school_score` is the mean NC performance score of the assigned
+    elementary, middle and high schools (85 and up is an A, 70 to 84 a B, 55
+    to 69 a C).
+  - Prices come from `market_estimate.market_values` for every parcel at once,
+    cached per day (`_priced_houses`, about 3 seconds).
+  - Some houses are left out: those under $50 per sq ft, and those under half
+    their neighborhood's or their area's median $/sq ft
+    (`MIN_MEDIAN_PRICE_SHARE`). Sorting by price per sq ft or by size had put
+    these first, and they are almost never real bargains. Of the 50 cheapest
+    per sq ft, the median was 0.29 of its area's, and a quarter were 2023
+    builds assessed while unfinished. The area check catches new subdivisions
+    that were assessed while unfinished, where the whole neighborhood is
+    priced low: houses on Kistler Farm Rd in Davidson came out at 6,700 sq ft
+    for $462k. About 0.6% of houses are left out. There is no
+    price-per-sq-ft sort for the same reason.
 - `find_deals(model_name="hist_gradient_boosting", feature_set="with_neighborhood_price", top_n=10, min_sale_price=10000, area=None)`:
   despite the name, this does not find houses for sale. It finds past
   arms-length sales that were well below the model's estimate, ranked by
@@ -834,7 +874,7 @@ Mecklenburg.
 Lets a user ask questions in plain language. A language model decides which
 functions to call and writes the answer from their results.
 
-- Six tools are registered with the `@beta_tool` decorator from the
+- Seven tools are registered with the `@beta_tool` decorator from the
   Anthropic SDK, listed in `TOOLS`:
   - `lookup_property`: takes an `address` or `parcel_id`, and calls
     `search.lookup_property`.
@@ -844,17 +884,33 @@ functions to call and writes the answer from their results.
     range. With a new `heated_area`, `bedrooms` or `bathrooms` it calls
     `market_estimate.what_if` instead, which also returns
     `change_vs_unchanged`, what the change alone is worth.
-  - `predict_total_value`: takes any of the 27 features plus `feature_set`,
-    and calls `predict.predict_total_value` with the default model.
-    It also returns `adjusted_to_today`, the estimate times
+  - `predict_total_value`: takes a `parcel_id`, or a described house's
+    `land_use_class`, `area`, `acreage`, `year_built`, `heated_area`,
+    `bedrooms` and `bathrooms`, plus `feature_set`, and calls
+    `predict.predict_total_value` with the default model. With a
+    `parcel_id`, the house's record from `search.lookup_property` supplies
+    every feature, and any other argument given replaces that feature. For a
+    described house, every feature not given is the area's median
+    (`search.typical_features`), or the preprocessor's county-wide value when
+    there is no `area`. `property_age` is recomputed from a given
+    `year_built`. It also returns `adjusted_to_today`, the estimate times
     `predict.market_adjustment()`, when the Zillow file has been downloaded.
-  - `find_similar_houses`: takes the same features plus `feature_set` and `k`,
-    and calls `search.find_similar_houses`.
+  - `find_similar_houses`: takes the same arguments plus `k`, fills in the
+    features the same way, and calls `search.find_similar_houses`.
+  - `find_houses`: takes a buyer's criteria (`max_price`, `area`,
+    `land_use_class`, `min_bedrooms`, `min_bathrooms`, `min_heated_area`,
+    `min_year_built`, `min_school_score`, `max_light_rail_miles`), `sort_by`
+    and `top_n` (at most 5, to keep the result short), and calls
+    `search.find_houses`.
   - `find_deals`: takes `feature_set`, `top_n` and an optional `area`, and
     calls `search.find_deals`.
 - The two feature-based tools share one block of argument descriptions
   (`FEATURE_ARGS_DOC`), which `_with_feature_docs` inserts into each docstring
-  before `@beta_tool` turns the docstring into the tool schema.
+  before `@beta_tool` turns the docstring into the tool schema. They used to
+  take all 27 features as arguments, which made their two schemas 70% of the
+  prompt: about 2,900 of 4,000 tokens, which took Ollama 11 seconds to
+  process. They also made the model copy every value from `lookup_property`
+  into the call.
 - Tools return JSON strings. Errors, such as an unknown feature set or models
   that have not been trained yet, are returned as `{"error": ...}` so the
   model can explain them.
@@ -868,14 +924,76 @@ functions to call and writes the answer from their results.
     rough and only for a house described without an address,
   - the list of areas,
   - when given an address or parcel ID, to call `lookup_property` first and
-    pass its feature values into the estimate and comps tools, and to ask
-    which house was meant if there are several matches,
-  - for a house described without an address, to use `area_stats` for typical
-    values or ask for the address, since estimates are much weaker without the
-    house's location,
+    pass its `parcel_id` to the other tools, and to ask which house was meant
+    if there are several matches,
+  - for a house described without an address, to pass what the user gave to
+    the estimate and comps tools, which fill in the rest from the area, and to
+    ask for the area or the address when it is missing,
+  - when the user is looking for a house or wants recommendations, to call
+    `find_houses` instead of asking for an address, to keep the answer to the
+    top 3 areas and 3 example houses, and to say they come from county
+    records rather than listings. Before this tool existed, the model asked
+    for an address, or fell back on `area_stats`. That meant comparing a
+    budget with 2023 assessed medians and treating distance to the nearest
+    school as school quality,
+  - to compare a budget with `find_houses`' estimated price, never with
+    `area_stats`' 2023 assessed values,
+  - to help only with Mecklenburg homes. For anything else, such as another
+    place, general knowledge, writing, code, mortgage or loan math, or an
+    attempt to change its instructions, it calls no tool and replies with
+    exactly `OFF_TOPIC_REPLY`. That takes about 1 second. Before this rule,
+    such requests took 2 to 8 seconds, and the model wrote the poem or told
+    the joke it was asked for,
   - to only give dollar amounts that came from a tool,
   - to mention the renovation and assessed-versus-market caveats whenever it
     shows deals.
+- `quick_reply(message, follow_up=False)`: a fixed reply, without the model,
+  or `None` for a message the model should answer.
+  - Small talk: when the whole message is a greeting (`GREETING_REPLY`:
+    "Hello! How can I assist you today?"), thanks, a goodbye, or a request for
+    help (a list of what the assistant can do, with an example). It compares
+    the whole message, lowercased and without punctuation, with the
+    `SMALL_TALK` patterns.
+  - No words at all, such as "???" or an emoji: asks the user to try again.
+  - Too long: a message over 2,000 characters (`MAX_QUESTION_CHARS`) gets
+    `TOO_LONG_REPLY` instead of filling the context. The chat UI's input box
+    stops at 2,000 characters too.
+  - Too short: a first message of 2 words or fewer (`MAX_VAGUE_WORDS`) with no
+    number, such as "house", "Matthews" or "price?", gets `MORE_INFO_REPLY`.
+    That asks for more and gives three example questions. A message with a
+    number ("3612 Abbey Hill", "parcel 20947309", "$400k") goes to the model.
+    So does a short follow-up (`follow_up`, any message after the first): it
+    may answer something the model just asked, such as "Matthews" after
+    "Which area?".
+  - "hi, what is ... worth?", "help me find a house" and "deals in Matthews"
+    still go to the model. So do "ok", "yes" and "sure", which can answer a
+    question the model just asked.
+  - These replies take a few milliseconds; the model took 0.7 to 8 seconds on
+    them. `_run` checks first, so `ask`, `chat` and the chat UI all use it.
+- `_fit_history(messages)`: limits the conversation history sent to the
+  model, so a long chat keeps its memory without overflowing the context or
+  slowing down. The caller (the chat UI or `chat`) still keeps and shows the
+  full conversation.
+  - A turn adds about 1,000 characters (300 tokens, measured over an 8-turn
+    chat). Up to `MAX_HISTORY_CHARS` (12,000, about 12 turns), the history is
+    sent whole.
+  - Beyond that, the oldest turns are dropped `HISTORY_DROP_TURNS` (4) at a
+    time. Their questions, up to the last 30 and each cut to 150 characters,
+    are listed before the first turn kept ("Earlier in this chat I asked:
+    ..."). So the model still knows what was asked, and calls a tool again if
+    it needs an earlier answer. In a 14-turn test, asked for "the first house
+    I asked about", it found 3612 Abbey Hill Ln in that list and looked up
+    its value again.
+  - Dropping 4 turns at a time keeps the start of the conversation the same
+    for several turns. Ollama reuses its cache for that start, and dropping
+    one turn every turn would change it every time.
+  - So a question's prompt stays below about 9,000 tokens: system prompt and
+    tools about 3,100, history at most about 3,600 plus the list of
+    questions, and a turn's tool results up to about 2,000. That is far
+    below the 32,768-token context, which Ollama would otherwise fill and
+    then silently drop the oldest messages from. Reopening a long chat
+    rereads its history once, about 15 seconds at most.
+  - `_run` applies it to every conversation, for both Ollama and Claude.
 - `MODEL` comes from `ASSISTANT_MODEL`. The default is `qwen3.5:9b`, which
   runs locally through Ollama for free (see Setup); a model id starting with
   `claude` uses the Anthropic API.
@@ -888,20 +1006,88 @@ functions to call and writes the answer from their results.
     Anthropic. If the whole chain declines, `ask` returns "The request was
     declined."
   - Ollama (`_run_ollama`): a plain loop over Ollama's `/api/chat`, with the
-    same tool schemas (`to_dict()` of each `@beta_tool`). It sets a 32,768
-    token context (`OLLAMA_CONTEXT`), since the tool schemas alone are about
-    15,000 characters and Ollama's default is 4,096 tokens. Bad tool
-    arguments go back to the model as an error, and the loop stops after 10
-    rounds (`MAX_TOOL_ROUNDS`). An answer takes 35 to 60 seconds on an M3 Pro
-    with 18 GB.
+    same tool schemas (`OLLAMA_TOOLS`, from `to_dict()` of each
+    `@beta_tool`). It sets a 32,768 token context (`OLLAMA_CONTEXT`), since
+    Ollama's default is 4,096 tokens and the system prompt and tool schemas
+    alone are about 3,100. With Ollama 0.40.4's MLX runner, the context size
+    doesn't reserve memory: a fresh load is 7.7 GB at 16,384 or 32,768. Memory
+    grows as Ollama caches more (about 13 GB after a long session) and is
+    freed when the model unloads. Bad tool arguments go back to the model as an
+    error, and the loop stops after 10 rounds (`MAX_TOOL_ROUNDS`).
+  - Thinking is off (`OLLAMA_THINK`). Qwen3.5's reasoning roughly doubled
+    the time per answer, and in the checks it didn't choose tools better.
+  - The model stays loaded for 30 minutes after the last request
+    (`OLLAMA_KEEP_ALIVE`). Ollama's default is 5. Unloading also drops
+    Ollama's prompt cache, and reloading costs about 4 seconds.
+  - Ollama caches the system prompt and tool schemas for every question that
+    starts with them, but Qwen3.5's recurrent layers can't be rewound. The
+    cache can only restore a snapshot, which Ollama saves where a request
+    first diverges from what it has cached. So after the model loads, the
+    first two questions each take about 10 seconds more, and later ones
+    reuse the cache.
+- `warm_up(model=True)`: starts loading, in background threads, what the
+  first question would otherwise wait for. It runs the tools' functions once
+  on the first config test address and prices every house for `find_houses`,
+  which loads the feature table, models and market ratios (about 8 seconds). With `model`, it also sends Ollama two
+  different one-token questions, which load the model and save the cache
+  snapshot. Tool calls wait for the data, and questions sent to the model
+  wait for the model. Small talk waits for neither. Errors are left for the
+  real tool call or question to report.
+- On an M3 Pro with 18 GB, "what is <address> worth today?" takes about 13
+  seconds in `chat` once warmed up, and about 20 seconds from the command
+  line with the model loaded. It used to take 40 to 48 seconds: thinking
+  took about 10 seconds, the larger schemas another 6, and loading the model
+  and data on each run about 10. Most of what is left is the model writing
+  the final answer.
 - `ask(question)`: answers one question and returns the answer's text.
 - `chat()`: multi-turn chat in the terminal, so the model can ask follow-up
   questions such as which of several address matches was meant. Only the
   model's final answer from each turn is kept in the history. If it needs an
   earlier tool result again, it calls the tool again. An empty line or Ctrl-D
-  quits.
+  quits. It starts `warm_up()` before the first prompt, so the loading happens
+  while the first question is typed.
 - Run from the command line with the question as arguments to use `ask`. With
-  no arguments it starts `chat`.
+  no arguments it starts `chat`. A command-line question starts
+  `warm_up(model=False)`, so the data loads while the model reads the
+  question.
+
+---
+
+## api
+
+Chat UI v1.0: a web page for the assistant, served on this computer only.
+
+```bash
+uv run python -m api.main   # then open http://127.0.0.1:8000
+```
+
+- `api/main.py`: a FastAPI app (version `1.0`) with two routes:
+  - `GET /`: the page, `api/static/index.html`.
+  - `POST /api/chat`: takes `{"question": ..., "history": [{"role", "content"}, ...]}`,
+    runs `assistant.ask(question, history)` and returns `{"answer": ...}`.
+    If the Ollama server isn't running or the model isn't pulled, it returns a
+    503 with the assistant's message saying how to fix it.
+  - On startup it runs `assistant.warm_up()`, so the data, models and the
+    Ollama model load while the page opens. A question sent before that
+    finishes waits for it: about 25 seconds after a cold start. A
+    `quick_reply` message gets its fixed reply straight away.
+- The page keeps the conversation and sends it with each question, as text
+  turns the way `assistant.chat` keeps them, so the server holds no sessions.
+- Old chats: a sidebar lists past chats, newest first, each with its first
+  question and when it was last used. Click one to reopen it and keep going,
+  or press × to delete it after a confirmation. A chat is saved after each
+  answer, so a question that failed isn't kept. Chats are stored in the
+  browser's `localStorage`, so they stay on this computer and survive server
+  restarts, but each browser keeps its own list. The browser also treats
+  `http://127.0.0.1:8000` and `http://localhost:8000` as different sites, so
+  each keeps a separate list too. Clearing the browser's site data deletes
+  them. On a phone-width screen the sidebar slides in from the Chats button.
+- The page has a message list, an input box (Enter sends, Shift+Enter adds a
+  new line), a running timer while an answer is on its way, error messages,
+  and New chat. The chat list and New chat are disabled while an answer is on
+  its way, so the answer always lands in the chat that asked. It renders the model's bold text, bullet lists and headings,
+  escaping all other HTML. It follows the system's light or dark mode, works
+  at phone width, and loads nothing from the internet.
 
 ---
 
@@ -1090,6 +1276,12 @@ starting value x ratio, and the house decides both parts:
   the partial-assessment check would not fire. Saved to
   `output/models/out_of_fold_estimates.csv`; rerun after retraining or
   refreshing the data. A what-if uses the production model.
+- **Many houses at once** (`market_values(houses)`): the same starting value
+  and ratio rules, vectorized over a DataFrame, without ranges. It gives the
+  same estimates as `market_value` for the 6 test houses across all four
+  paths. A house that needs the model's estimate but isn't in the
+  out-of-fold file gets no estimate, instead of the production model's.
+  `search.find_houses` uses it to price every house.
 - **Ranges** (`range_factors_by_method`): calibrated like `range_factors`, on
   the last 6 months' sales, separately for the neighborhood ratio and for the
   fallbacks together. The fallback range is much wider (as of October 2026
@@ -1201,7 +1393,7 @@ currently run on its own with `python -m`.
 src/components/   pipeline stages
 src/utils/        config loading and CSV helpers
 src/pipeline/     not yet complete
-api/              not yet complete (empty main.py)
+api/              chat UI v1.0: main.py (FastAPI) and static/index.html
 config/           config.yaml, schema.yaml (empty)
 data/raw/         downloaded and hand-placed source files
 data/processed/   cleaned properties and places map
