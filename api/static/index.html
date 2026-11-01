@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>House Value Assistant v1.0</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #ffffff; --text: #1f2328; --muted: #6b7075;
+    --border: #e1e2e0; --accent: #2f6f5e; --accent-text: #ffffff;
+    --user-bubble: #e6efec; --error: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161817; --surface: #1f2221; --text: #e6e7e5; --muted: #9a9f9c;
+      --border: #333836; --accent: #5fae97; --accent-text: #0f1211;
+      --user-bubble: #263430; --error: #f2b8b5;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  button {
+    font: inherit; font-size: 14px; border-radius: 10px; padding: 8px 14px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  aside {
+    width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 14px; padding: 12px;
+    border-right: 1px solid var(--border); background: var(--surface); overflow-y: auto;
+  }
+  aside.busy #chat-list { pointer-events: none; opacity: 0.6; }
+  .list-label { font-size: 12px; color: var(--muted); padding: 0 8px; }
+  #chat-list { display: flex; flex-direction: column; gap: 2px; margin-top: -8px; }
+  .chat-item { display: flex; align-items: center; border-radius: 8px; }
+  .chat-item:hover { background: var(--bg); }
+  .chat-item.active { background: var(--user-bubble); }
+  .chat-item .open { flex: 1; min-width: 0; text-align: left; border: 0; background: none; padding: 7px 8px; }
+  .chat-item .title { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-item .date { display: block; font-size: 12px; color: var(--muted); }
+  .chat-item .delete { border: 0; background: none; color: var(--muted); font-size: 18px; padding: 2px 10px; visibility: hidden; }
+  .chat-item:hover .delete, .chat-item.active .delete { visibility: visible; }
+  .no-chats { color: var(--muted); font-size: 13px; padding: 0 8px; margin: 0; }
+
+  .app { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .column { width: 100%; max-width: 760px; margin: 0 auto; padding: 0 16px; }
+  header { border-bottom: 1px solid var(--border); background: var(--surface); }
+  header .column { display: flex; align-items: center; gap: 10px; height: 56px; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  .version { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+  #menu, #backdrop { display: none; }
+  main { flex: 1; overflow-y: auto; }
+  #messages { display: flex; flex-direction: column; gap: 14px; padding-top: 20px; padding-bottom: 20px; }
+  .empty { color: var(--muted); text-align: center; margin-top: 18vh; }
+  .empty strong { color: var(--text); display: block; font-size: 17px; margin-bottom: 4px; }
+  .msg { max-width: 88%; padding: 10px 14px; border-radius: 14px; overflow-wrap: anywhere; }
+  .msg.user { align-self: flex-end; background: var(--user-bubble); white-space: pre-wrap; }
+  .msg.assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); }
+  .msg.pending { color: var(--muted); }
+  .msg.error { color: var(--error); }
+  .msg p { margin: 0 0 8px; } .msg p:last-child, .msg ul:last-child { margin-bottom: 0; }
+  .msg ul { margin: 0 0 8px; padding-left: 20px; }
+  footer { border-top: 1px solid var(--border); background: var(--surface); }
+  #form { display: flex; gap: 8px; align-items: flex-end; padding-top: 12px; padding-bottom: 12px; }
+  textarea {
+    flex: 1; resize: none; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; max-height: 160px;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  /* Phones: the chat list slides in over the page */
+  @media (max-width: 720px) {
+    aside {
+      position: fixed; top: 0; bottom: 0; left: 0; z-index: 2; width: 80%; max-width: 300px;
+      transform: translateX(-100%); transition: transform 0.2s;
+    }
+    body.sidebar-open aside { transform: none; }
+    body.sidebar-open #backdrop { display: block; position: fixed; inset: 0; z-index: 1; background: rgb(0 0 0 / 0.35); }
+    #menu { display: inline-block; padding: 6px 12px; }
+    .chat-item .delete { visibility: visible; }
+  }
+</style>
+</head>
+<body>
+<aside id="sidebar">
+  <button id="new-chat" class="primary" type="button">New chat</button>
+  <div class="list-label">Chats</div>
+  <nav id="chat-list"></nav>
+</aside>
+<div id="backdrop"></div>
+<div class="app">
+  <header>
+    <div class="column">
+      <button id="menu" type="button">Chats</button>
+      <h1>House Value Assistant</h1>
+      <span class="version">v1.0</span>
+    </div>
+  </header>
+  <main id="scroller">
+    <div id="messages" class="column"></div>
+  </main>
+  <footer>
+    <form id="form" class="column">
+      <textarea id="input" rows="1" maxlength="2000" placeholder="Ask about a house" autofocus></textarea>
+      <button id="send" class="primary" type="submit">Send</button>
+    </form>
+  </footer>
+</div>
+<script>
+  const messages = document.getElementById("messages");
+  const scroller = document.getElementById("scroller");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+  const send = document.getElementById("send");
+  const newChat = document.getElementById("new-chat");
+  const sidebar = document.getElementById("sidebar");
+  const chatList = document.getElementById("chat-list");
+
+  // Chats are kept in this browser's localStorage: [{title, updated, messages}], newest first.
+  const STORE_KEY = "house-value-assistant-chats";
+  let chats = loadChats();
+  let current = null;  // the open chat, or null until a new chat's first answer saves it
+  let history = [];    // the open chat's turns as {role, content}, sent with each question
+  let busy = false;
+
+  function loadChats() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch { return []; }
+  }
+
+  function saveChats() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(chats)); } catch { /* blocked or full: kept until the page closes */ }
+  }
+
+  function formatDate(time) {
+    const date = new Date(time);
+    return date.toDateString() === new Date().toDateString()
+      ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : date.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
+  function renderChatList() {
+    chatList.replaceChildren();
+    if (!chats.length) {
+      chatList.innerHTML = '<p class="no-chats">No chats yet</p>';
+      return;
+    }
+    for (const chat of chats) {
+      const item = document.createElement("div");
+      item.className = chat === current ? "chat-item active" : "chat-item";
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "open";
+      const title = document.createElement("span");
+      title.className = "title";
+      title.textContent = chat.title;
+      const date = document.createElement("span");
+      date.className = "date";
+      date.textContent = formatDate(chat.updated);
+      open.append(title, date);
+      open.addEventListener("click", () => openChat(chat));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "delete";
+      remove.textContent = "×";
+      remove.title = "Delete chat";
+      remove.setAttribute("aria-label", "Delete chat");
+      remove.addEventListener("click", () => deleteChat(chat));
+      item.append(open, remove);
+      chatList.appendChild(item);
+    }
+  }
+
+  function showEmpty() {
+    messages.innerHTML = '<div class="empty"><strong>Ask about a house in Mecklenburg County</strong>' +
+      'e.g. "What is 3612 Abbey Hill Ln, Charlotte worth today?"</div>';
+  }
+
+  // The model answers in Markdown; render bold, bullets and headings. Text is escaped first.
+  function renderMarkdown(text) {
+    const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const inline = (s) => escape(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    let html = "", inList = false;
+    for (const line of text.split("\n")) {
+      const item = line.match(/^\s*[-*•]\s+(.*)/);
+      if (item && !inList) { html += "<ul>"; inList = true; }
+      if (!item && inList) { html += "</ul>"; inList = false; }
+      if (item) html += `<li>${inline(item[1])}</li>`;
+      else if (/^\s*([-*_])\1{2,}\s*$/.test(line)) continue;  // horizontal rule
+      else if (/^#{1,6}\s/.test(line)) html += `<p><strong>${inline(line.replace(/^#+\s*/, ""))}</strong></p>`;
+      else if (line.trim()) html += `<p>${inline(line)}</p>`;
+    }
+    return inList ? html + "</ul>" : html;
+  }
+
+  function addMessage(className, text) {
+    messages.querySelector(".empty")?.remove();
+    const div = document.createElement("div");
+    div.className = `msg ${className}`;
+    div.textContent = text;
+    messages.appendChild(div);
+    scroller.scrollTop = scroller.scrollHeight;
+    return div;
+  }
+
+  function closeSidebar() {
+    document.body.classList.remove("sidebar-open");
+  }
+
+  function openChat(chat) {
+    if (busy) return;
+    current = chat;
+    history = chat.messages;
+    messages.replaceChildren();
+    for (const turn of history) {
+      const div = addMessage(turn.role, turn.content);
+      if (turn.role === "assistant") div.innerHTML = renderMarkdown(turn.content);
+    }
+    renderChatList();
+    closeSidebar();
+  }
+
+  function startNewChat() {
+    if (busy) return;
+    current = null;
+    history = [];
+    showEmpty();
+    renderChatList();
+    closeSidebar();
+    input.focus();
+  }
+
+  function deleteChat(chat) {
+    if (busy || !confirm(`Delete "${chat.title}"?`)) return;
+    chats = chats.filter((c) => c !== chat);
+    saveChats();
+    if (chat === current) startNewChat();
+    else renderChatList();
+  }
+
+  function saveTurn(question, answer) {
+    history.push({ role: "user", content: question }, { role: "assistant", content: answer });
+    if (!current) current = { title: question.slice(0, 100), updated: 0, messages: history };
+    current.updated = Date.now();
+    chats = [current, ...chats.filter((c) => c !== current)];
+    saveChats();
+    renderChatList();
+  }
+
+  function setBusy(value) {
+    busy = value;
+    send.disabled = newChat.disabled = value;
+    sidebar.classList.toggle("busy", value);
+  }
+
+  async function ask(question) {
+    addMessage("user", question);
+    const reply = addMessage("assistant pending", "Working…");
+    const started = Date.now();
+    const timer = setInterval(() => {
+      reply.textContent = `Working… ${Math.round((Date.now() - started) / 1000)}s`;
+    }, 1000);
+    setBusy(true);
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, history }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `The server returned an error (${response.status}). See its log.`);
+      reply.className = "msg assistant";
+      reply.innerHTML = renderMarkdown(data.answer);
+      saveTurn(question, data.answer);
+    } catch (error) {
+      reply.className = "msg assistant error";
+      reply.textContent = error.message === "Failed to fetch" ? "Can't reach the server. Is it running?" : error.message;
+    } finally {
+      clearInterval(timer);
+      setBusy(false);
+      scroller.scrollTop = scroller.scrollHeight;
+      input.focus();
+    }
+  }
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const question = input.value.trim();
+    if (!question || busy) return;
+    input.value = "";
+    input.style.height = "";
+    ask(question);
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  });
+
+  newChat.addEventListener("click", startNewChat);
+  document.getElementById("menu").addEventListener("click", () => document.body.classList.add("sidebar-open"));
+  document.getElementById("backdrop").addEventListener("click", closeSidebar);
+
+  showEmpty();
+  renderChatList();
+</script>
+</body>
+</html>

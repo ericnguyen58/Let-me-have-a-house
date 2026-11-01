@@ -25,16 +25,17 @@ find_deals output as a starting point to investigate, not a verified "deal" list
 
 import functools
 import re
-from datetime import datetime
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 
+from src.components import market_estimate
 from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
 from src.components.predict import DEFAULT_FEATURE_SET, DEFAULT_MODEL_NAME, load_model
-from src.components.training import FEATURE_COLUMNS, FEATURE_SETS, SALE_DERIVED_FEATURES
-from src.utils.common import read_dataframe, resolve_path
+from src.components.training import FEATURE_COLUMNS, FEATURE_SETS, NUMERIC_FEATURES, SALE_DERIVED_FEATURES
+from src.utils.common import read_dataframe_cached, resolve_path
 from src.utils.load_config import load_config
 
 SIMILAR_HOUSE_DISPLAY_COLUMNS = [
@@ -52,6 +53,23 @@ PROPERTY_DISPLAY_COLUMNS = [
     "total_value", "land_value", "building_value", "sale_price", "sale_date",
     "elementary_school", "middle_school", "high_school",
 ] + FEATURE_COLUMNS
+
+# find_houses' results: what a buyer compares, kept short since the model reads every row
+HOUSE_DISPLAY_COLUMNS = [
+    "parcel_id", "address", "area", "land_use_class", "bedrooms", "bathrooms", "heated_area",
+    "year_built", "estimated_price", "school_score", "light_rail_miles",
+]
+# find_houses' sort options -> ascending. Not price_per_sqft: its cheapest end is mostly
+# records that are wrong or misleading (see MIN_MEDIAN_PRICE_SHARE), not bargains.
+HOUSE_SORT_ORDERS = {"school_score": False, "year_built": False, "heated_area": False, "estimated_price": True}
+# A house estimated under this share of its neighborhood's or its area's median $/sqft is
+# left out of find_houses: the 50 cheapest per sqft were at a median 0.29 of their area's, a
+# quarter of them 2023 builds whose assessment covered an unfinished house - a record
+# problem or a teardown, not a recommendation. The area check catches new subdivisions
+# assessed while unfinished, whose whole neighborhood is priced low (Kistler Farm, Davidson:
+# 6,700 sqft at $462k).
+MIN_MEDIAN_PRICE_SHARE = 0.5
+SCHOOL_SCORE_COLUMNS = ["elementary_school_score", "middle_school_score", "high_school_score"]
 
 # A sale below this flat price/sqft is treated as implausible, not a great deal - e.g. a
 # $32k sale of a 3,004 sqft house ($10.7/sqft) is almost certainly a family transfer or
@@ -77,9 +95,8 @@ MIN_PRICE_PER_SQFT = 50
 MAX_SALE_AGE_YEARS = 2
 
 
-@functools.lru_cache(maxsize=1)
 def _load_features_df(features_path):
-    return read_dataframe(features_path, "properties_features.csv")
+    return read_dataframe_cached(features_path, "properties_features.csv")
 
 
 @functools.lru_cache(maxsize=None)
@@ -200,6 +217,85 @@ def area_stats(area=None):
     sales = df[df["arms_length_sale"].astype(bool)]
     stats["median_sale_price_per_sqft"] = sales.groupby("area")["price_per_sqft"].median()
     return stats.round(3).reset_index().to_dict(orient="records")
+
+
+@functools.lru_cache(maxsize=1)
+def _area_medians():
+    df = _load_features_df(resolve_path(load_config(), "features_data"))
+    return df.groupby("area")[NUMERIC_FEATURES].median()
+
+
+def typical_features(area):
+    """The median of each numeric model feature over the area's houses: stand-in values
+    for a house described without an address, so its location features come from its
+    area instead of the whole county."""
+    medians = _area_medians()
+    if area not in medians.index:
+        raise ValueError(f"unknown area {area!r}, expected one of {list(medians.index)}")
+    return medians.loc[area].dropna().to_dict()
+
+
+@functools.lru_cache(maxsize=1)
+def _priced_houses(as_of):
+    """One row per parcel with a value and heated area, and today's estimated market price
+    (market_estimate.market_values), its $/sqft and the mean score of the assigned schools.
+    Houses below MIN_PRICE_PER_SQFT, or MIN_MEDIAN_PRICE_SHARE of their neighborhood's or
+    area's median $/sqft, are left out. Keyed by date, so a long-running process re-prices daily."""
+    df = _load_features_df(resolve_path(load_config(), "features_data"))
+    df = df[df["total_value"].gt(0) & df["heated_area"].gt(0)].drop_duplicates("parcel_id")
+    price = market_estimate.market_values(df, as_of)
+    df = df.assign(estimated_price=price, price_per_sqft=price / df["heated_area"],
+                   school_score=df[SCHOOL_SCORE_COLUMNS].mean(axis=1))
+    too_low = df["price_per_sqft"] < MIN_PRICE_PER_SQFT
+    for group in ["neighborhood_code", "area"]:
+        too_low |= df["price_per_sqft"] < MIN_MEDIAN_PRICE_SHARE * df.groupby(group)["price_per_sqft"].transform("median")
+    return df[~too_low].dropna(subset=["estimated_price"])
+
+
+def find_houses(max_price=None, area=None, land_use_class=None, min_bedrooms=None, min_bathrooms=None,
+                min_heated_area=None, min_year_built=None, min_school_score=None, max_light_rail_miles=None,
+                sort_by="school_score", top_n=5):
+    """Existing houses matching a buyer's criteria, priced at today's estimated market value:
+    {"matches": how many, "by_area": matches per area with their median price, $/sqft, school
+    score and light rail distance, most matches first,
+    "houses": the top_n best by `sort_by` (a HOUSE_SORT_ORDERS key)}. These come from the
+    county record, so they are not necessarily for sale. school_score is the mean NC
+    performance score of the assigned elementary, middle and high schools."""
+    if sort_by not in HOUSE_SORT_ORDERS:
+        raise ValueError(f"unknown sort_by {sort_by!r}, expected one of {list(HOUSE_SORT_ORDERS)}")
+    df = _priced_houses(date.today().isoformat())
+    for column, value in [("area", area), ("land_use_class", land_use_class)]:
+        if value is not None and value not in df[column].values:
+            raise ValueError(f"unknown {column} {value!r}, expected one of {sorted(df[column].dropna().unique())}")
+    limits = [("estimated_price", max_price, "max"), ("light_rail_miles", max_light_rail_miles, "max"),
+              ("bedrooms", min_bedrooms, "min"), ("bathrooms", min_bathrooms, "min"),
+              ("heated_area", min_heated_area, "min"), ("year_built", min_year_built, "min"),
+              ("school_score", min_school_score, "min")]
+    keep = pd.Series(True, index=df.index)
+    for column, value in [("area", area), ("land_use_class", land_use_class)]:
+        if value is not None:
+            keep &= df[column] == value
+    for column, value, kind in limits:
+        if value is not None:
+            keep &= df[column] <= value if kind == "max" else df[column] >= value
+    matches = df[keep]
+
+    by_area = matches.groupby("area").agg(
+        houses=("parcel_id", "size"), median_estimated_price=("estimated_price", "median"),
+        median_price_per_sqft=("price_per_sqft", "median"), median_school_score=("school_score", "median"),
+        median_light_rail_miles=("light_rail_miles", "median"),
+    ).sort_values("houses", ascending=False).round(
+        {"median_estimated_price": 0, "median_price_per_sqft": 0, "median_school_score": 1, "median_light_rail_miles": 1}
+    ).reset_index()
+    top = matches.sort_values(sort_by, ascending=HOUSE_SORT_ORDERS[sort_by]).head(top_n)
+    top = top.assign(address=top["situs_street_num"].map(lambda n: f"{n:.0f}" if pd.notna(n) else "")
+                     + " " + top["situs_street_name"].fillna("") + ", " + top["situs_city"].fillna(""))
+    houses = top[HOUSE_DISPLAY_COLUMNS].round({"estimated_price": 0, "school_score": 1, "light_rail_miles": 1})
+    return {
+        "matches": len(matches),
+        "by_area": by_area.to_dict(orient="records"),
+        "houses": houses.astype(object).where(houses.notna(), None).to_dict(orient="records"),
+    }
 
 
 if __name__ == "__main__":
