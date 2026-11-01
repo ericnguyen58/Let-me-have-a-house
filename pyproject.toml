@@ -11,25 +11,21 @@ dependencies = [
     "anthropic>=1.8.0",
     "fastapi>=0.141.1",
     "geopandas>=1.1.4",
-    "ipykernel>=7.3.0",
-    "matplotlib>=3.11.1",
     "numpy>=2.5.2",
     "openpyxl>=3.1.5",
     "overturemaps>=1.0.2",
     "pandas",
-    "path>=17.1.1",
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
     "scikit-learn>=1.9.0",
-    "seaborn>=0.13.2",
-    "shap>=0.52.0",
     "uvicorn>=0.54.0",
     "xgboost>=3.4.1",
 ]
 
 [tool.uv]
 package = false
+default-groups = ["dev", "notebooks"]
 
 [dependency-groups]
 dev = [
@@ -37,6 +33,12 @@ dev = [
     "nbconvert>=7.17.1",
     "pytest>=9.2.0",
     "ruff>=0.17.3",
+]
+notebooks = [
+    "ipykernel>=7.3.0",
+    "matplotlib>=3.11.1",
+    "seaborn>=0.13.2",
+    "shap>=0.52.0",
 ]
 
 [tool.ruff]
