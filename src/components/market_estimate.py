@@ -130,9 +130,12 @@ def range_factors(sales, as_of, base="total_value"):
     as_of = pd.Timestamp(as_of)
     start = as_of - pd.DateOffset(months=RANGE_CALIBRATION_MONTHS)
     ratios = neighborhood_ratios(sales, start)
-    later = sales[(sales["sale_date"] >= start) & (sales["sale_date"] < as_of)
-                  & sales["neighborhood_code"].isin(ratios.index)
-                  & (sales["year_built"] < ASSESSMENT_YEAR)]  # houses that get an estimate
+    later = sales[
+        (sales["sale_date"] >= start)
+        & (sales["sale_date"] < as_of)
+        & sales["neighborhood_code"].isin(ratios.index)
+        & (sales["year_built"] < ASSESSMENT_YEAR)
+    ]  # houses that get an estimate
     misses = later["sale_price"] / (later[base] * later["neighborhood_code"].map(ratios["median"]))
     return tuple(misses.quantile(list(RANGE_QUANTILES)))
 
@@ -143,22 +146,31 @@ def market_estimate(assessed_value, neighborhood_code, year_built=None, as_of=No
     market_estimate is None when the house was built in or after ASSESSMENT_YEAR, or the
     neighborhood has too few recent sales."""
     if year_built is not None and year_built >= ASSESSMENT_YEAR:
-        return {"market_estimate": None, "reason": f"built in {int(year_built)}, after the January "
-                f"{ASSESSMENT_YEAR} assessment the method scales from"}
+        return {
+            "market_estimate": None,
+            "reason": f"built in {int(year_built)}, after the January "
+            f"{ASSESSMENT_YEAR} assessment the method scales from",
+        }
     as_of = as_of or datetime.now()
     sales = load_sales(resolve_path(load_config(), "features_data"))
     ratios = neighborhood_ratios(sales, as_of)
     if neighborhood_code not in ratios.index:
-        return {"market_estimate": None, "reason": f"fewer than {MIN_NEIGHBORHOOD_SALES} sales in "
-                f"{neighborhood_code} in the last {RATIO_WINDOWS_MONTHS[-1]} months"}
+        return {
+            "market_estimate": None,
+            "reason": f"fewer than {MIN_NEIGHBORHOOD_SALES} sales in "
+            f"{neighborhood_code} in the last {RATIO_WINDOWS_MONTHS[-1]} months",
+        }
     row = ratios.loc[neighborhood_code]
     estimate = assessed_value * row["median"]
     low, high = range_factors(sales, as_of)
     return {
         "market_estimate": round(float(estimate), 2),
-        "range_low": round(float(estimate * low), 2), "range_high": round(float(estimate * high), 2),
+        "range_low": round(float(estimate * low), 2),
+        "range_high": round(float(estimate * high), 2),
         "ratio": round(float(row["median"]), 4),
-        "neighborhood": neighborhood_code, "sales_used": int(row["count"]), "months": int(row["months"]),
+        "neighborhood": neighborhood_code,
+        "sales_used": int(row["count"]),
+        "months": int(row["months"]),
     }
 
 
@@ -231,8 +243,9 @@ def range_factors_by_method(sales, as_of, base):
     of that period. The fallback methods have few such sales, so they share one range."""
     as_of = pd.Timestamp(as_of)
     start = as_of - pd.DateOffset(months=RANGE_CALIBRATION_MONTHS)
-    later = sales[(sales["sale_date"] >= start) & (sales["sale_date"] < as_of)
-                  & (sales["year_built"] < ASSESSMENT_YEAR)]
+    later = sales[
+        (sales["sale_date"] >= start) & (sales["sale_date"] < as_of) & (sales["year_built"] < ASSESSMENT_YEAR)
+    ]
     ratio, method, _, _ = apply_ratios(ratio_tables(sales, start), later)
     misses = later["sale_price"] / (later[base] * ratio)
     is_main = method == RATIO_METHODS[0]
@@ -277,6 +290,7 @@ def _model_estimate(house):
         if house["parcel_id"] in by_parcel.index:
             return float(by_parcel[house["parcel_id"]]), "out-of-fold model"
     from src.components.predict import predict_total_value
+
     return predict_total_value(house), "production model"
 
 
@@ -301,8 +315,13 @@ def market_value(house, as_of=None):
     if county is None:
         base, reason = "model", "no county assessed value given"
     elif year_built is not None and year_built >= ASSESSMENT_YEAR and county < PARTIAL_ASSESSMENT_SHARE * model_value:
-        base, reason = "model", (f"built in {int(year_built)}; its county value is {county / model_value:.0%} of the "
-                                 f"model's estimate, most likely a partial assessment of an unfinished house")
+        base, reason = (
+            "model",
+            (
+                f"built in {int(year_built)}; its county value is {county / model_value:.0%} of the "
+                f"model's estimate, most likely a partial assessment of an unfinished house"
+            ),
+        )
     else:
         base, reason = "county", "county assessed value"
     start_value = county if base == "county" else model_value
@@ -314,13 +333,17 @@ def market_value(house, as_of=None):
     estimate = start_value * ratio
     return {
         "market_estimate": round(float(estimate), 2),
-        "range_low": round(float(estimate * low), 2), "range_high": round(float(estimate * high), 2),
+        "range_low": round(float(estimate * low), 2),
+        "range_high": round(float(estimate * high), 2),
         "starting_value": round(float(start_value), 2),
         "starting_value_source": "county assessed value" if base == "county" else model_source,
         "reason": reason,
-        "county_value": county, "model_estimate": round(model_value, 2),
-        "ratio": round(float(ratio), 4), "ratio_method": method,
-        "sales_used": None if pd.isna(count) else int(count), "months": None if pd.isna(months) else int(months),
+        "county_value": county,
+        "model_estimate": round(model_value, 2),
+        "ratio": round(float(ratio), 4),
+        "ratio_method": method,
+        "sales_used": None if pd.isna(count) else int(count),
+        "months": None if pd.isna(months) else int(months),
         "confidence": {"neighborhood": "normal", "zillow_county": "low"}.get(method, "lower"),
         "as_of": as_of.date().isoformat(),
     }
@@ -334,7 +357,9 @@ def market_values(houses, as_of=None):
     as_of = pd.Timestamp(as_of or datetime.now()).normalize().date().isoformat()
     county = houses["total_value"].where(houses["total_value"] > 0)
     model = houses["parcel_id"].map(_out_of_fold()[1])
-    use_model = county.isna() | ((houses["year_built"] >= ASSESSMENT_YEAR) & (county < PARTIAL_ASSESSMENT_SHARE * model))
+    use_model = county.isna() | (
+        (houses["year_built"] >= ASSESSMENT_YEAR) & (county < PARTIAL_ASSESSMENT_SHARE * model)
+    )
     county_ratio = apply_ratios(_pricing("county", as_of)[0], houses)[0]
     model_ratio = apply_ratios(_pricing("model", as_of)[0], houses)[0]
     return (county * county_ratio).where(~use_model, model * model_ratio)
@@ -378,8 +403,12 @@ def check_test_houses():
 
 def _errors(actual, predicted):
     pct = (predicted - actual).abs() / actual
-    return {"mae": (predicted - actual).abs().mean(), "median_pct_error": pct.median(),
-            "mean_pct_error": pct.mean(), "within_10pct": (pct <= 0.10).mean()}
+    return {
+        "mae": (predicted - actual).abs().mean(),
+        "median_pct_error": pct.median(),
+        "mean_pct_error": pct.mean(),
+        "within_10pct": (pct <= 0.10).mean(),
+    }
 
 
 def backtest(cutoff="2026-04-01", end=None):
@@ -394,11 +423,16 @@ def backtest(cutoff="2026-04-01", end=None):
 
     covered = test["neighborhood_code"].isin(ratios.index)
     new = test["year_built"] >= ASSESSMENT_YEAR
-    new_misses = (test.loc[covered & new, "sale_price"] / (test.loc[covered & new, "total_value"]
-                  * test.loc[covered & new, "neighborhood_code"].map(ratios["median"])) - 1).abs()
-    print(f"{len(test):,} sales from {pd.Timestamp(cutoff).date()} to {end.date()}; "
-          f"{covered.mean():.1%} have a neighborhood ratio; {(covered & new).sum()} of those are houses built "
-          f"in {ASSESSMENT_YEAR} or later (median error {new_misses.median():.1%}, left out)")
+    new_misses = (
+        test.loc[covered & new, "sale_price"]
+        / (test.loc[covered & new, "total_value"] * test.loc[covered & new, "neighborhood_code"].map(ratios["median"]))
+        - 1
+    ).abs()
+    print(
+        f"{len(test):,} sales from {pd.Timestamp(cutoff).date()} to {end.date()}; "
+        f"{covered.mean():.1%} have a neighborhood ratio; {(covered & new).sum()} of those are houses built "
+        f"in {ASSESSMENT_YEAR} or later (median error {new_misses.median():.1%}, left out)"
+    )
     test = test[covered & ~new]
     print("windows used (months: sales):", test["neighborhood_code"].map(ratios["months"]).value_counts().to_dict())
     test["sales_ratio"] = test["total_value"] * test["neighborhood_code"].map(ratios["median"])
@@ -406,13 +440,16 @@ def backtest(cutoff="2026-04-01", end=None):
     test["no_adjustment"] = test["total_value"]
     low, high = range_factors(sales, cutoff)  # calibrated on sales before the cutoff only
     inside = test["sale_price"].between(test["sales_ratio"] * low, test["sales_ratio"] * high)
-    print(f"80% range {low - 1:+.1%} to {high - 1:+.1%} of the estimate; "
-          f"{inside.mean():.1%} of test sales fell inside it")
+    print(
+        f"80% range {low - 1:+.1%} to {high - 1:+.1%} of the estimate; {inside.mean():.1%} of test sales fell inside it"
+    )
 
-    results = pd.DataFrame({
-        method: _errors(test["sale_price"], test[method])
-        for method in ["no_adjustment", "zillow_index", "sales_ratio"]
-    }).T
+    results = pd.DataFrame(
+        {
+            method: _errors(test["sale_price"], test[method])
+            for method in ["no_adjustment", "zillow_index", "sales_ratio"]
+        }
+    ).T
     results["test_sales"] = len(test)
     return results
 
@@ -439,14 +476,18 @@ def _estimate_held_out(df, held_out, source, feature_folds):
     cfg = load_config()
     train = with_aggregates(df[~held_out], source)
     fold = _parcel_folds(df.loc[held_out, "parcel_id"], feature_folds)
-    scored = pd.concat([
-        with_aggregates(df.loc[fold.index[fold == k]], source.drop(index=fold.index[fold == k]))
-        for k in range(feature_folds)
-    ])
+    scored = pd.concat(
+        [
+            with_aggregates(df.loc[fold.index[fold == k]], source.drop(index=fold.index[fold == k]))
+            for k in range(feature_folds)
+        ]
+    )
     previous, params = best_previous_model(resolve_path(cfg, "reports"))
     features = FEATURE_SETS[previous["feature_set"]]
-    print(f"refitting {previous['feature_set']} {previous['model']} on {len(train):,} houses; "
-          f"{len(scored):,} held out", flush=True)
+    print(
+        f"refitting {previous['feature_set']} {previous['model']} on {len(train):,} houses; {len(scored):,} held out",
+        flush=True,
+    )
     preprocessor = build_preprocessor(features)
     model = build_model(previous["model"], params, cfg["training"])
     model.fit(preprocessor.fit_transform(train[features]), np.log1p(train[TARGET]))
@@ -456,6 +497,7 @@ def _estimate_held_out(df, held_out, source, feature_folds):
 
 def _training_rows():
     from src.components.training import load_training_data
+
     df = load_training_data(resolve_path(load_config(), "features_data"))
     df["row_id"] = df.index  # the aggregates' merges reset the index
     return df
@@ -493,14 +535,28 @@ def build_out_of_fold_estimates():
     return out
 
 
-CHAIN_METHODS = ["assessed_x_ratio", "assessed_x_zillow", "model_x_ratio", "model_x_calibrated_ratio",
-                 "model_x_zillow", "chain"]
-SEGMENTS = ["built before 2023, neighborhood ratio", "built 2023 or later, neighborhood ratio",
-            "no neighborhood ratio"]
+CHAIN_METHODS = [
+    "assessed_x_ratio",
+    "assessed_x_zillow",
+    "model_x_ratio",
+    "model_x_calibrated_ratio",
+    "model_x_zillow",
+    "chain",
+]
+SEGMENTS = ["built before 2023, neighborhood ratio", "built 2023 or later, neighborhood ratio", "no neighborhood ratio"]
 # Quarterly cutoffs for multi_cutoff_backtest: each window runs to the next cutoff, so
 # every sale is scored once.
-BACKTEST_CUTOFFS = ["2024-04-01", "2024-07-01", "2024-10-01", "2025-01-01", "2025-04-01",
-                    "2025-07-01", "2025-10-01", "2026-01-01", "2026-04-01"]
+BACKTEST_CUTOFFS = [
+    "2024-04-01",
+    "2024-07-01",
+    "2024-10-01",
+    "2025-01-01",
+    "2025-04-01",
+    "2025-07-01",
+    "2025-10-01",
+    "2026-01-01",
+    "2026-04-01",
+]
 
 
 def chain_predictions(cutoff="2026-04-01", end=None, sales=None):
@@ -533,8 +589,10 @@ def chain_predictions(cutoff="2026-04-01", end=None, sales=None):
 
     covered, new = nbhd.isin(ratio_cal.index), test["year_built"] >= ASSESSMENT_YEAR
     test["segment"] = np.select([covered & ~new, covered & new], SEGMENTS[:2], SEGMENTS[2])
-    for method, ratios, base in [("assessed_x_ratio", sales, "total_value"),
-                                 ("model_x_calibrated_ratio", calibrated, "model_estimate")]:
+    for method, ratios, base in [
+        ("assessed_x_ratio", sales, "total_value"),
+        ("model_x_calibrated_ratio", calibrated, "model_estimate"),
+    ]:
         low, high = range_factors(ratios, cutoff, base=base)
         test[f"{method}_in_range"] = test["sale_price"].between(test[method] * low, test[method] * high)
     test["cutoff"] = cutoff.date()
@@ -551,10 +609,16 @@ def score_chain(test):
             scored = in_segment[in_segment[method].notna()]
             if len(scored):
                 in_range = f"{method}_in_range"
-                rows.append({"segment": segment, "method": method, "sales": len(scored),
-                             "coverage": len(scored) / len(in_segment),
-                             **_errors(scored["sale_price"], scored[method]),
-                             "in_80pct_range": scored[in_range].mean() if in_range in scored else np.nan})
+                rows.append(
+                    {
+                        "segment": segment,
+                        "method": method,
+                        "sales": len(scored),
+                        "coverage": len(scored) / len(in_segment),
+                        **_errors(scored["sale_price"], scored[method]),
+                        "in_80pct_range": scored[in_range].mean() if in_range in scored else np.nan,
+                    }
+                )
     return pd.DataFrame(rows)
 
 
@@ -570,7 +634,7 @@ def multi_cutoff_backtest(cutoffs=BACKTEST_CUTOFFS, end=None):
     sales = load_sales(resolve_path(load_config(), "features_data"))
     ends = [pd.Timestamp(c) - pd.Timedelta(days=1) for c in cutoffs[1:]] + [end]
     windows = []
-    for cutoff, window_end in zip(cutoffs, ends):
+    for cutoff, window_end in zip(cutoffs, ends, strict=True):
         print(f"cutoff {cutoff}", flush=True)
         windows.append(chain_predictions(cutoff, window_end, sales))
     predictions = pd.concat(windows)
@@ -581,9 +645,21 @@ def multi_cutoff_backtest(cutoffs=BACKTEST_CUTOFFS, end=None):
 
 if __name__ == "__main__" and sys.argv[1:] == ["houses"]:
     houses = check_test_houses()
-    shown = ["group", "address", "starting_value_source", "ratio_method", "path_as_expected", "county_value",
-             "starting_value", "ratio", "sales_used", "market_estimate", "range_low", "range_high",
-             "change_vs_unchanged"]
+    shown = [
+        "group",
+        "address",
+        "starting_value_source",
+        "ratio_method",
+        "path_as_expected",
+        "county_value",
+        "starting_value",
+        "ratio",
+        "sales_used",
+        "market_estimate",
+        "range_low",
+        "range_high",
+        "change_vs_unchanged",
+    ]
     print(houses[shown].to_string(index=False, float_format=lambda x: f"{x:,.4g}" if x < 10 else f"{x:,.0f}"))
     if not houses["path_as_expected"].all():
         print("\nSome houses took a different path than `expect` in config/config.yaml - check why before updating it.")
@@ -602,13 +678,26 @@ elif __name__ == "__main__" and sys.argv[1:] == ["chain-multi"]:
     print(by_cutoff.round(3).to_string())
     save_dataframe(pooled, reports_path, "market_chain_backtest_pooled.csv")
     save_dataframe(by_cutoff.reset_index(), reports_path, "market_chain_backtest_by_cutoff.csv")
-    save_dataframe(predictions[["parcel_id", "cutoff", "sale_date", "sale_price", "segment", "total_value",
-                                "model_estimate", *CHAIN_METHODS]], reports_path, "market_chain_predictions.csv")
+    save_dataframe(
+        predictions[
+            [
+                "parcel_id",
+                "cutoff",
+                "sale_date",
+                "sale_price",
+                "segment",
+                "total_value",
+                "model_estimate",
+                *CHAIN_METHODS,
+            ]
+        ],
+        reports_path,
+        "market_chain_predictions.csv",
+    )
 elif __name__ == "__main__":
     results = backtest()
     print(results.round(4).to_string())
-    save_dataframe(results.reset_index(names="method"), resolve_path(load_config(), "reports"),
-                   "market_backtest.csv")
+    save_dataframe(results.reset_index(names="method"), resolve_path(load_config(), "reports"), "market_backtest.csv")
 
     from src.components.search import lookup_property
 

@@ -33,6 +33,7 @@ Hyperparameters are tuned per feature set per model type via RandomizedSearchCV
 
 import json
 import os
+
 import joblib
 import numpy as np
 import pandas as pd
@@ -63,13 +64,31 @@ SALE_DERIVED_FEATURES = [NEIGHBORHOOD_PRICE, "neighborhood_sale_count", "price_m
 
 CATEGORICAL_FEATURES = ["land_use_class", "area"]
 NUMERIC_FEATURES = [
-    "acreage", "year_built", "heated_area", "bedrooms", "bathrooms",
-    "latitude", "longitude", "property_age",
-    "neighborhood_median_price_per_sqft", "neighborhood_sale_count", "price_momentum",
-    "education_nearest_miles", "places_count", "health_care_share", "activity_share",
-    "emergency_fire_miles", "emergency_police_miles", "emergency_medical_miles",
-    "elementary_school_score", "middle_school_score", "high_school_score",
-    "violent_crime_rate", "property_crime_rate", "in_floodplain", "light_rail_miles",
+    "acreage",
+    "year_built",
+    "heated_area",
+    "bedrooms",
+    "bathrooms",
+    "latitude",
+    "longitude",
+    "property_age",
+    "neighborhood_median_price_per_sqft",
+    "neighborhood_sale_count",
+    "price_momentum",
+    "education_nearest_miles",
+    "places_count",
+    "health_care_share",
+    "activity_share",
+    "emergency_fire_miles",
+    "emergency_police_miles",
+    "emergency_medical_miles",
+    "elementary_school_score",
+    "middle_school_score",
+    "high_school_score",
+    "violent_crime_rate",
+    "property_crime_rate",
+    "in_floodplain",
+    "light_rail_miles",
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 FEATURE_SETS = {
@@ -94,14 +113,12 @@ def load_training_data(features_path):
 def test_address_parcels():
     """Parcel ids of config `test_addresses`, the houses every example and check uses."""
     from src.components.search import lookup_property  # search imports this module
-    return [row["parcel_id"] for address in load_config().get("test_addresses", [])
-            for row in lookup_property(address)]
+
+    return [row["parcel_id"] for address in load_config().get("test_addresses", []) for row in lookup_property(address)]
 
 
 def split_with_aggregates(df, training_cfg):
-    train, test = train_test_split(
-        df, test_size=training_cfg["test_size"], random_state=training_cfg["random_state"]
-    )
+    train, test = train_test_split(df, test_size=training_cfg["test_size"], random_state=training_cfg["random_state"])
     # the test addresses always go to the test set, so their estimates are real tests
     moved = train["parcel_id"].isin(test_address_parcels())
     train, test = train[~moved], pd.concat([test, train[moved]])
@@ -113,18 +130,24 @@ def split_with_aggregates(df, training_cfg):
 
 
 def build_preprocessor(features):
-    numeric_pipeline = Pipeline([
-        ("impute", SimpleImputer(strategy="median")),
-        ("scale", StandardScaler()),
-    ])
-    categorical_pipeline = Pipeline([
-        ("impute", SimpleImputer(strategy="most_frequent")),
-        ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-    ])
-    return ColumnTransformer([
-        ("num", numeric_pipeline, [c for c in features if c in NUMERIC_FEATURES]),
-        ("cat", categorical_pipeline, [c for c in features if c in CATEGORICAL_FEATURES]),
-    ])
+    numeric_pipeline = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+        ]
+    )
+    categorical_pipeline = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+        ]
+    )
+    return ColumnTransformer(
+        [
+            ("num", numeric_pipeline, [c for c in features if c in NUMERIC_FEATURES]),
+            ("cat", categorical_pipeline, [c for c in features if c in CATEGORICAL_FEATURES]),
+        ]
+    )
 
 
 def dollar_mae(y_log_true, y_log_pred):
@@ -177,25 +200,35 @@ def build_search_estimators(random_state, training_cfg):
     # segfaults even single-threaded (verified via bisection); tree_method="approx" + n_jobs=1
     # is the combination that survives.
     search_kwargs = dict(
-        n_iter=training_cfg["search_iter"], cv=training_cfg["cv_folds"],
-        scoring=make_scorer(dollar_mae, greater_is_better=False), random_state=random_state, n_jobs=-1, refit=True,
+        n_iter=training_cfg["search_iter"],
+        cv=training_cfg["cv_folds"],
+        scoring=make_scorer(dollar_mae, greater_is_better=False),
+        random_state=random_state,
+        n_jobs=-1,
+        refit=True,
     )
     return {
         # no n_jobs: it uses OpenMP threads, which joblib limits per search worker
         "hist_gradient_boosting": RandomizedSearchCV(
             HistGradientBoostingRegressor(
-                random_state=random_state, max_iter=3000,
-                early_stopping=True, validation_fraction=0.1, n_iter_no_change=50,
+                random_state=random_state,
+                max_iter=3000,
+                early_stopping=True,
+                validation_fraction=0.1,
+                n_iter_no_change=50,
             ),
-            HIST_GRADIENT_BOOSTING_PARAM_DISTRIBUTIONS, **search_kwargs,
+            HIST_GRADIENT_BOOSTING_PARAM_DISTRIBUTIONS,
+            **search_kwargs,
         ),
         "random_forest": RandomizedSearchCV(
             RandomForestRegressor(random_state=random_state, n_jobs=1),
-            RANDOM_FOREST_PARAM_DISTRIBUTIONS, **search_kwargs,
+            RANDOM_FOREST_PARAM_DISTRIBUTIONS,
+            **search_kwargs,
         ),
         "xgboost": RandomizedSearchCV(
             XGBRegressor(random_state=random_state, n_jobs=1, tree_method="approx"),
-            XGBOOST_PARAM_DISTRIBUTIONS, **search_kwargs,
+            XGBOOST_PARAM_DISTRIBUTIONS,
+            **search_kwargs,
         ),
     }
 

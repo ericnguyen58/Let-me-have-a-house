@@ -51,7 +51,7 @@ def chat(request: ChatRequest):
     try:
         answer = assistant.ask(request.question, [turn.model_dump() for turn in request.history])
     except SystemExit as e:  # the assistant's message for a missing Ollama server or model
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
     return {"answer": answer}
 
 

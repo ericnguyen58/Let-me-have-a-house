@@ -34,4 +34,18 @@ package = false
 [dependency-groups]
 dev = [
     "nbconvert>=7.17.1",
+    "ruff>=0.17.3",
 ]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# the formatter wraps code at line-length; what is left over is long strings and comments
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# lambdas passed to .pipe() run inside the loop iteration that defines them
+"src/components/evaluating.py" = ["B023"]
