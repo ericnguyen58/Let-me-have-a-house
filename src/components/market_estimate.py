@@ -643,7 +643,8 @@ def multi_cutoff_backtest(cutoffs=BACKTEST_CUTOFFS, end=None):
     return score_chain(predictions), by_cutoff, predictions
 
 
-if __name__ == "__main__" and sys.argv[1:] == ["houses"]:
+def run_houses():
+    """check_test_houses, printed and saved to reports/market_test_houses.csv."""
     houses = check_test_houses()
     shown = [
         "group",
@@ -664,6 +665,11 @@ if __name__ == "__main__" and sys.argv[1:] == ["houses"]:
     if not houses["path_as_expected"].all():
         print("\nSome houses took a different path than `expect` in config/config.yaml - check why before updating it.")
     save_dataframe(houses, resolve_path(load_config(), "reports"), "market_test_houses.csv")
+    return houses
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["houses"]:
+    run_houses()
 elif __name__ == "__main__" and sys.argv[1:] == ["calibrate"]:
     build_out_of_fold_estimates()
 elif __name__ == "__main__" and sys.argv[1:] == ["chain"]:
