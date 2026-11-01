@@ -153,6 +153,12 @@ RESIDENTIAL_LAND_USE_CLASSES = ["single_family", "condo", "townhouse"]
 MIN_HEATED_AREA = 300
 MAX_HEATED_AREA = 10_000
 
+# More bedrooms than this is a data entry error: the largest real counts in the county file
+# are 12 (in 4,773 and 6,928 sqft houses), while the 6 rows above 20 have 23 to 334 bedrooms
+# in 1,528 to 6,974 sqft (parcel 18909409: 334 bedrooms, 1 bathroom, 2,202 sqft). Rows with
+# bedrooms missing are left in, as with heated_area.
+MAX_BEDROOMS = 20
+
 # UNINC is unincorporated land scattered between towns, and STALLINGS is 52 parcels of a
 # town that sits mostly in Union County - neither works as an area of its own, so each
 # of their parcels takes the majority city of its nearest labeled parcels.
@@ -473,7 +479,7 @@ def clean_properties(df):
     df = df[df["land_use_class"].isin(RESIDENTIAL_LAND_USE_CLASSES)]
 
     bad_heated_area = df["heated_area"].notna() & ~df["heated_area"].between(MIN_HEATED_AREA, MAX_HEATED_AREA)
-    df = df[~bad_heated_area]
+    df = df[~bad_heated_area & ~(df["bedrooms"] > MAX_BEDROOMS)]
 
     # Individual-owner filter needs owner_name, so runs before it (and situs_zip, unused
     # downstream) are dropped.

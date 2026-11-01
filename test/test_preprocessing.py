@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 
 from src.components.data_preprocessing import (
+    MAX_BEDROOMS,
+    NUMERIC_COLUMNS,
+    clean_properties,
     is_individual_owner,
     median_split,
     nearest_label,
@@ -44,3 +47,19 @@ def test_nearest_label_takes_the_majority_nearby():
     )
     query = pd.DataFrame({"latitude": [35.0005], "longitude": [-80.0]})
     assert nearest_label(known, "city", query, k=3).tolist() == ["A"]
+
+
+def test_clean_properties_drops_impossible_bedroom_counts():
+    n = 5
+    raw = pd.DataFrame({column: [1.0] * n for column in NUMERIC_COLUMNS}).assign(
+        parcel_id=range(n),
+        heated_area=2202.0,
+        bedrooms=[3.0, MAX_BEDROOMS, MAX_BEDROOMS + 1, 334.0, np.nan],
+        sale_price=np.nan,
+        year_built=1990.0,
+        sale_date=pd.NaT,
+        sale_qualification=None,
+        land_use_class="R",
+        owner_name="SMITH JOHN",
+    )
+    assert clean_properties(raw)["parcel_id"].tolist() == [0, 1, 4]  # a missing count is kept
