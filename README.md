@@ -67,9 +67,11 @@ as described below.
 | 7. Search (property lookup, area stats, houses matching a buyer's criteria, similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
 | 8. Assistant (tool use, local Qwen3.5-9B or Claude) | `src/components/assistant.py` | Implemented |
 | Market estimate (sales ratio), `market_value` (model chain) and backtests | `src/components/market_estimate.py` | Implemented. Used by the assistant's `estimate_market_value` tool. |
-| Pipeline orchestration | `src/pipeline/` | Not yet complete (empty package) |
+| Pipeline orchestration | `src/pipeline/run.py` | Implemented: runs the stages in order, skipping those that are up to date |
 | Chat UI v1.0 | `api/main.py`, `api/static/index.html` | Implemented: a web page for the assistant |
-| Docker | `Dockerfile` | Not yet complete (IDE placeholder that runs `top`) |
+| Docker | `Dockerfile` | Implemented: an image of the chat API |
+| Tests | `test/` | Implemented: 62 tests, 6 of them on the local data |
+| CI/CD | `.github/workflows/ci.yml` | Implemented: lint, format check and tests on every push and pull request; the Docker image is pushed to GitHub's registry from `main` |
 
 ## Current models
 
@@ -80,45 +82,55 @@ if RMSE or R squared had to give a little. In a comparison on a validation
 split carved from the training rows, gradient boosting beat the tuned random
 forest on every metric anyway (MAE $29,407 against $33,066), and its model
 files are 45 to 70 MB instead of about 1.1 GB. The random forest and XGBoost
-setups are kept in `training.py` and can be switched back on.
+setups are kept in `training.py` and can be switched back on (XGBoost is an
+optional dependency: `uv sync --group xgboost`).
 
-Both models come from the latest full training run (about 20 minutes). It
-uses all 27 features, including the school, crime, flood and
+Both models come from the latest full training run (November 1, 2026, about
+20 minutes). It uses all 27 features, including the school, crime, flood and
 light rail features, and the about 9,200 golf, waterfront and high-rise homes
 that were added back (see `data_preprocessing.py`). Market sales are the ones
 the county marked "Qualified".
 
 | File in `output/models/` | Test set (about 61,000 houses) |
 |---|---|
-| `with_neighborhood_price_hist_gradient_boosting` (default) | RMSE $76,440, MAE $29,614, R squared 0.961, average error 5.10% |
-| `without_neighborhood_price_hist_gradient_boosting` | RMSE $75,598, MAE $29,778, R squared 0.962, average error 5.14% |
-| `*_random_forest` | Previous models, not used. RMSE $86,183, MAE $32,826, R squared 0.950, average error 5.71% (default feature set); $88,283, $34,435, 0.948, 6.00% (without neighborhood price). Their metrics and settings are kept in `reports/random_forest_run/`. |
+| `with_neighborhood_price_hist_gradient_boosting` (default) | RMSE $80,283, MAE $29,439, R squared 0.956, average error 5.04% |
+| `without_neighborhood_price_hist_gradient_boosting` | RMSE $83,464, MAE $29,969, R squared 0.953, average error 5.12% |
+| `*_random_forest` | Previous models, not used, scored on the earlier test split (see below). RMSE $86,183, MAE $32,826, R squared 0.950, average error 5.71% (default feature set); $88,283, $34,435, 0.948, 6.00% (without neighborhood price). Their metrics and settings are kept in `reports/random_forest_run/`. |
 | `*_xgboost` | Not used, and no longer fit the current preprocessors. |
 
-On the same test set, the switch from random forest lowered MAE by 9.8%
-(default) and 13.5% (without neighborhood price). With gradient boosting the
-two feature sets are almost equally accurate, so the neighborhood price
+This run removed 6 houses with impossible bedroom counts (see
+`data_preprocessing.py`), which redrew the random 80/20 split, so the test set
+is a different 61,000 houses. The settings came out the same, and MAE barely
+moved ($29,614 to $29,439 for the default model). RMSE rose ($76,440 to
+$80,283; $75,598 to $83,464 without neighborhood price) because it follows
+the largest misses, and the new test set holds a few that dominate it: the
+largest is a $10.9 million property estimated at about $4.9 million. Without
+its 20 largest misses, RMSE would be about $70,000.
+
+On the earlier split's test set, the switch from random forest lowered MAE by
+9.8% (default) and 13.5% (without neighborhood price). With gradient boosting
+the two feature sets are almost equally accurate, so the neighborhood price
 column adds little once the other location features are in.
 
 The best settings for both feature sets: `learning_rate` 0.05,
 `max_leaf_nodes` 255, `min_samples_leaf` 10, `max_features` 0.5,
-`l2_regularization` 0.1. Early stopping chose 1,589 trees (default) and
-2,327 trees (without neighborhood price).
+`l2_regularization` 0.1. Early stopping chose 2,335 trees (default) and
+2,088 trees (without neighborhood price).
 
 **Test houses** (held out of training; `evaluating.validate_houses` with
 their parcel IDs):
 
 | House | Assessed | Default model | Without neighborhood price |
 |---|---|---|---|
-| 4817 Kelly Woods Ln | $1,191,900 | $1,296,627 (+8.8%) | $1,340,598 (+12.5%) |
-| 3612 Abbey Hill Ln | $612,600 | $596,105 (−2.7%) | $601,817 (−1.8%) |
+| 4817 Kelly Woods Ln | $1,191,900 | $1,257,016 (+5.5%) | $1,377,399 (+15.6%) |
+| 3612 Abbey Hill Ln | $612,600 | $613,851 (+0.2%) | $607,038 (−0.9%) |
 
-These two houses came out better with the random forest (+5.5% and +1.2%).
-Two houses are too few to judge by; on the 10-house check the mean error went
-from 5.7% to 4.6%.
+The random forest had +5.5% and +1.2% on these two. Two houses are too few to
+judge by; on the 10-house check (`reports/validation_houses.csv`) the default
+model's mean error is 4.6%, and 5.5% without the neighborhood price.
 
 `predict.py` and the assistant give slightly different numbers for the same
-houses ($1,170,346 and $595,113 with the default model). `lookup_property`
+houses ($1,194,070 and $599,376 with the default model). `lookup_property`
 computes the neighborhood price features from every other house's sales,
 while validation uses training sales only. Both leave out the house's own
 sale.
@@ -170,6 +182,12 @@ api/main.py                         (chat UI v1.0 in the browser)
 uv sync
 ```
 
+This installs the dependencies, the `dev` group (pytest, ruff) and the
+`notebooks` group (matplotlib, seaborn, shap, umap-learn), which only the
+notebooks use. The Docker image leaves both groups out. A third group,
+`xgboost`, isn't installed by default; it is only needed if XGBoost is switched
+back on in `training.MODEL_TYPES` (`uv sync --group xgboost`).
+
 Requires Python 3.14 or newer. `overturemaps` is used as a command-line tool
 (called through `subprocess`), not as a Python import.
 
@@ -186,9 +204,24 @@ It needs about 8 GB of free memory. To use Claude instead, set
 `ASSISTANT_MODEL=claude-opus-5` and `ANTHROPIC_API_KEY`, in the environment or
 in a `.env` file (see `.env.example`).
 
+## Running the pipeline
+
+```bash
+uv run python -m src.pipeline.run                 # every stage that is out of date
+uv run python -m src.pipeline.run --dry-run       # what would run, and why, without running it
+uv run python -m src.pipeline.run --from train    # rerun train even if up to date, then what follows
+uv run python -m src.pipeline.run --to features   # stop after features
+uv run python -m src.pipeline.run --force         # rerun every selected stage
+```
+
+The stages, in order: `ingest`, `preprocess`, `features`, `train`,
+`calibrate` (`market_estimate calibrate`), `validate` (`evaluating`'s 10-house
+check) and `check_houses` (`market_estimate houses`). See
+[src/pipeline](#srcpipeline).
+
 ## Running each stage
 
-Run from the repository root:
+Each stage also runs on its own. Run from the repository root:
 
 ```bash
 uv run python -m src.components.data_ingestor        # download places, GIS, school and Zillow data
@@ -364,8 +397,11 @@ writes `data/processed/nc_places_map.csv` with four columns: `lat`, `lon`,
    about 9,200 of these homes, mostly on golf courses and Lake Norman, were
    dropped as "other". `MULTI FAMILY TOWNHOUSE` is still left out, since it is
    unclear whether those are individual homes.
-8. Removes rows with heated area outside 300 to 10,000 sq ft. Rows with
-   missing heated area are kept.
+8. Removes rows with heated area outside 300 to 10,000 sq ft, or more than 20
+   bedrooms (`MAX_BEDROOMS`). The largest real counts are 12; the 6 rows above
+   20 had 23 to 334 bedrooms in 1,528 to 6,974 sq ft, data entry errors such as
+   parcel 18909409 (334 bedrooms, 1 bathroom, 2,202 sq ft). Rows with missing
+   heated area or bedrooms are kept.
 9. Removes rows whose owner name contains a business or institution keyword
    (LLC, TRUST, BANK, CHURCH, CITY OF, and others in
    `NON_INDIVIDUAL_OWNER_KEYWORDS`). Blank owner names are kept.
@@ -567,7 +603,10 @@ Trains models that estimate `total_value` (the 2023 assessed value).
 Each set is trained with every model type in `MODEL_TYPES`. That is only
 `hist_gradient_boosting` for now, so 2 models are trained.
 `build_search_estimators` also defines random forest and XGBoost, which come
-back by adding `"random_forest"` or `"xgboost"` to `MODEL_TYPES`.
+back by adding `"random_forest"` or `"xgboost"` to `MODEL_TYPES`. It builds only
+the types asked for, and imports XGBoost only then: XGBoost is an optional
+dependency group (`uv sync --group xgboost`), left out of the default install
+and the Docker image.
 
 **Features** (`FEATURE_COLUMNS`):
 
@@ -1129,6 +1168,30 @@ Plots `evaluating.same_house_by_area`. Run
 - Central Charlotte's premiums come mostly from accessibility. Those of the
   lake towns and southern suburbs come mostly from schools.
 
+## notebooks/price_trends.ipynb
+
+How assessed values are spread across the 22 house and location features a
+buyer can see (the sale-derived features are left out, so price isn't in the
+axes), on the map, and over time. It reads the feature table and the Zillow
+index and runs in about a minute.
+
+- **PCA**: PC1 (23% of the variance) is a suburban axis: bigger houses, better
+  schools, farther from light rail. Price follows it: the median assessed value
+  rises from $254k in its lowest tenth to $719k in its highest.
+- **UMAP** (30,000 houses): expensive houses gather in a few large groups, and
+  each area holds its own part of the map, though `area` isn't a feature.
+  Condos and townhouses sit with the houses around them.
+- **PLS**: one direction, mostly size and school scores against crime,
+  explains 64% of the variation in log assessed value (two: 75%).
+- **Map**: value per sq ft is highest in C7 to C9 ($302 to $325) and along
+  Lake Norman, lowest in C1 to C3 ($175 to $180).
+- **Since 2016**: sale prices per sq ft about doubled, mostly in 2021 and
+  2022, in step with Zillow's index until 2023. Single-family houses are still
+  rising; condos have fallen since 2024.
+
+Standardized features are capped at 5 standard deviations, so the few extreme
+houses (lots of hundreds of acres, for example) don't stretch the axes.
+
 ### `market_estimate.py`
 
 Moves a 2023 assessed value to today's market price with a **sales ratio**,
@@ -1194,7 +1257,7 @@ the estimate, and 76.2% of the later sales fell inside it. As of today it is
 -10.6% to +19.7%: recent sales missed high more often than low, mostly
 renovated houses selling above their neighborhood's norm.
 
-Test houses:
+Test houses (October 1, 2026):
 
 | House | Assessed | Neighborhood ratio | Market estimate | 80% range |
 |---|---|---|---|---|
@@ -1326,28 +1389,128 @@ the model's training data, which probably teaches it to value new houses low.
 **Test houses** (`market_test_houses` in `config/config.yaml`, two per path;
 `uv run python -m src.components.market_estimate houses` reruns them, flags any
 house whose path no longer matches its `expect`, and saves
-`reports/market_test_houses.csv`). As of October 1, 2026:
+`reports/market_test_houses.csv`). As of November 1, 2026:
 
 | Group | House | Starting value | Ratio | Market estimate | 80% range |
 |---|---|---|---|---|---|
-| Built before 2023 | 4817 Kelly Woods Ln | $1,191,900 (county) | 1.259, neighborhood (4 sales) | $1,500,904 | $1,341,891 to $1,798,045 |
-| Built before 2023 | 3612 Abbey Hill Ln | $612,600 (county) | 1.364, neighborhood (6 sales) | $835,309 | $746,812 to $1,000,678 |
-| Built 2023 or later | 333 Cranford Dr, Pineville (2024) | $411,800 (county; full assessment) | 1.081, neighborhood (9 sales) | $445,000 | $397,855 to $533,099 |
-| Built 2023 or later | 5204 Mint Harbor Wy (2025) | $582,582 (model; county value $336,500 is 58% of it) | 1.606, neighborhood vs model (53 sales) | $935,850 | $823,180 to $1,106,998 |
-| No neighborhood ratio | 12020 Jumper Dr, Mint Hill | $609,200 (county) | 1.053, 60-month adjusted (3 sales) | $641,311 | $563,464 to $894,959 |
-| No neighborhood ratio | 7916 Pebbleridge Dr | $344,700 (county) | 1.160, area (381 sales) | $399,823 | $351,289 to $557,959 |
-| What-if | Abbey Hill, +1 bedroom, +400 sq ft | $674,548 (model) | 1.363, neighborhood vs model | $919,435 (+$108,274) | $808,742 to $1,087,582 |
-| What-if | Kelly Woods, +1 bathroom | $1,174,624 (model) | 1.273, neighborhood vs model | $1,495,363 (+$5,446) | $1,315,331 to $1,768,835 |
+| Built before 2023 | 4817 Kelly Woods Ln | $1,191,900 (county) | 1.284, neighborhood (3 sales) | $1,529,788 | $1,375,766 to $1,821,142 |
+| Built before 2023 | 3612 Abbey Hill Ln | $612,600 (county) | 1.421, neighborhood (4 sales) | $870,545 | $782,897 to $1,036,343 |
+| Built 2023 or later | 333 Cranford Dr, Pineville (2024) | $411,800 (county; full assessment) | 1.085, neighborhood (8 sales) | $446,809 | $401,823 to $531,905 |
+| Built 2023 or later | 5204 Mint Harbor Wy (2025) | $601,626 (model; county value $336,500 is 56% of it) | 1.599, neighborhood vs model (42 sales) | $961,904 | $844,363 to $1,133,111 |
+| No neighborhood ratio | 12020 Jumper Dr, Mint Hill | $609,200 (county) | 1.053, 60-month adjusted (3 sales) | $641,311 | $569,951 to $855,027 |
+| No neighborhood ratio | 7916 Pebbleridge Dr | $344,700 (county) | 1.160, area (344 sales) | $399,833 | $355,342 to $533,076 |
+| What-if | Abbey Hill, +1 bedroom, +400 sq ft | $660,757 (model) | 1.417, neighborhood vs model | $936,385 (+$86,985) | $821,962 to $1,103,049 |
+| What-if | Kelly Woods, +1 bathroom | $1,233,908 (model) | 1.246, neighborhood vs model | $1,537,253 (+$49,633) | $1,349,406 to $1,810,864 |
 
 A what-if's change in brackets compares it with the same house, unchanged,
-through the same model; it is what the change alone is worth. Mint Harbor's
-1.606 is high because the model's estimates for new houses run low (see
+through the same model; it is what the change alone is worth. It moves a lot
+between training runs: on the models before the November 1 rebuild, the same
+two changes were worth +$108,274 and +$5,446. Treat a single what-if as a
+rough figure. Mint Harbor's
+1.599 is high because the model's estimates for new houses run low (see
 above), and the ratio against the model's estimate makes up for it.
 
 ## src/pipeline
 
-Not yet complete. Contains only an empty `__init__.py`. Each stage is
-currently run on its own with `python -m`.
+`run.py` runs the stages in order. Each stage lists the files it reads and
+writes (`stages(cfg)`, paths from `config/config.yaml`). A stage is up to date
+when all its outputs exist and none of its inputs is newer than its oldest
+output, the way make decides, and is skipped then:
+
+| Stage | Runs | Reads | Writes |
+|---|---|---|---|
+| `ingest` | `data_ingestor().ingest()` | nothing | Overture places, GIS layers, quality of life, school report cards, Zillow index |
+| `preprocess` | `data_preprocessing.run` | the Mecklenburg CSV, Overture places | `properties_clean.csv`, `nc_places_map.csv` |
+| `features` | `feature_engineering.run` | both of those, GIS layers, report cards | `properties_features.csv` |
+| `train` | `training.run` | the feature table | the models, `training_metrics.csv`, `best_hyperparameters.json` |
+| `calibrate` | `market_estimate.build_out_of_fold_estimates` | the feature table, the training reports | `out_of_fold_estimates.csv` |
+| `validate` | `evaluating.run` | the feature table, the models | `validation_houses.csv` |
+| `check_houses` | `market_estimate.run_houses` | the feature table, the models, the out-of-fold estimates, the Zillow index | `market_test_houses.csv` |
+
+- Only data files count as inputs, not code. After changing a stage's code,
+  rerun from that stage: `--from features` reruns `features` even if it is up
+  to date, and the stages after it then see a newer input.
+- `--dry-run` shows each stage's decision and reason, following what the
+  stages before it would rewrite.
+- A missing input stops the run before the stage, naming the stage that makes
+  it. The Mecklenburg CSV (`data/raw/merklenburg/Cama_Table_transformed.csv`)
+  is placed by hand, so no stage makes it.
+- The research runs (`evaluating drop_column`, `same_house_by_area`,
+  `finetune`, the market backtests) aren't stages; they still run on their own.
+
+## Tests
+
+```bash
+uv run pytest            # everything
+uv run pytest -m data    # only the checks on the local data
+uv run pytest -m "not data"
+```
+
+`test/conftest.py` builds a small synthetic feature table (600 houses whose
+value grows with size, age and area), so most tests need neither the real
+data nor the trained models:
+
+- `test_preprocessing.py`, `test_feature_engineering.py`: land use mapping,
+  sale price outliers, the owner filter, area splitting, distances,
+  neighborhood aggregates from training rows only, price momentum and its
+  area fallback, school name matching.
+- `test_market_estimate.py`: the ratio windows (12, 24, 36 months), the
+  fallback order of `apply_ratios`, no estimate for houses built in 2023 or
+  later.
+- `test_search.py`: address and parcel lookup, a house's own sale left out of
+  its neighborhood price, area stats.
+- `test_training_predict.py`: trains both feature sets with `training.py`'s
+  own code on the synthetic table, saves the artifacts and loads them back
+  through `predict.py`.
+- `test_assistant.py`: `quick_reply`, history trimming, an unknown tool, the
+  tool schemas.
+- `test_api.py`: the page, `/api/chat`, the 503 for a missing Ollama server,
+  a bad request.
+- `test_pipeline.py`: skipping, rerunning after a newer input, `--from`,
+  `--dry-run`, missing inputs, and that every stage's input is made by an
+  earlier stage.
+
+`test_with_local_data.py` (marked `data`) checks the real files: each test
+address is one house, the model is within 20% of the county value for the
+first two, and every `market_test_houses` house takes the path in its
+`expect`. These tests skip themselves when the files are missing, as in CI.
+
+## CI/CD
+
+`.github/workflows/ci.yml` runs on every push to `main`, every pull request,
+and by hand:
+
+1. **Lint and format**: `ruff check` and `ruff format --check`, with the
+   settings in `pyproject.toml` (line length 120; the notebooks are left out).
+   Run `uv run ruff check --fix . && uv run ruff format .` before pushing.
+2. **Tests**: `uv sync --locked` (it fails if `uv.lock` is out of date) and
+   `pytest`. The 6 `data` tests are skipped there.
+3. **Docker image**, after both pass: builds the image, checks that the API
+   imports inside it, and on a push to `main` pushes it to
+   `ghcr.io/ericnguyen58/let-me-have-a-house` as `latest` and `sha-<commit>`.
+
+The actions are pinned to commit SHAs and the base images to digests.
+`.github/dependabot.yml` opens a weekly pull request for each of Python
+packages, actions and base images.
+
+## Docker
+
+The image runs the chat API with uvicorn on port 8000, as a non-root user. It
+holds the code and the runtime dependencies only; the feature table, models
+and Zillow index are mounted read-only:
+
+```bash
+docker build -t let-me-have-a-house .
+docker run --rm -p 8000:8000 \
+  -v "$PWD/data:/app/data:ro" -v "$PWD/output:/app/output:ro" \
+  -e OLLAMA_URL=http://host.docker.internal:11434 \
+  let-me-have-a-house
+```
+
+`OLLAMA_URL` points the assistant at Ollama on the host; for Claude, pass
+`-e ASSISTANT_MODEL=... -e ANTHROPIC_API_KEY=...` instead (`.env` isn't
+copied into the image). The health check requests `/`. The image is about
+1.2 GB; XGBoost, which isn't in use, is left out.
 
 ## Known issues
 
@@ -1385,25 +1548,30 @@ currently run on its own with `python -m`.
   Qwen3.5-9B got every dollar amount right in three test questions, but
   mislabeled some of them: it called the neighborhood's sales "sales in this
   area", and called a what-if's starting value the current house's.
-- `config/schema.yaml` is empty, and `Dockerfile` is an IDE placeholder.
+- Other implausible values may still pass the cleaning, which only bounds
+  heated area and bedrooms; `price_trends.ipynb` caps its standardized
+  features at 5 standard deviations for that reason.
+- `config/schema.yaml` is empty.
 
 ## Repository layout
 
 ```
 src/components/   pipeline stages
 src/utils/        config loading and CSV helpers
-src/pipeline/     not yet complete
+src/pipeline/     run.py: runs the stages in order, skipping those that are up to date
 api/              chat UI v1.0: main.py (FastAPI) and static/index.html
 config/           config.yaml, schema.yaml (empty)
 data/raw/         downloaded and hand-placed source files
 data/processed/   cleaned properties and places map
 data/features/    feature table used for training and search
 notebooks/        exploration notebooks; shap_explain.ipynb explains the model stage by stage,
-                  area_effect.ipynb compares the same house across areas
+                  area_effect.ipynb compares the same house across areas, price_trends.ipynb
+                  shows how prices spread (PCA, UMAP, PLS, map, sales since 2016)
 output/models/    trained preprocessors and models (finetuned/ holds retrained ones)
 reports/          training metrics, chosen hyperparameters, house validation, drop-column
                   and same-house-by-area results
 report.md         the research write-up: SHAP, drop-column test, same house by area
-test/             no tests yet
-Dockerfile        placeholder, not yet complete
+test/             pytest suite; conftest.py builds the synthetic feature table
+Dockerfile        image of the chat API (data and models are mounted)
+.github/          CI/CD workflow (workflows/ci.yml) and Dependabot settings
 ```
