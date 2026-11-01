@@ -39,25 +39,60 @@ from src.utils.common import read_dataframe_cached, resolve_path
 from src.utils.load_config import load_config
 
 SIMILAR_HOUSE_DISPLAY_COLUMNS = [
-    "parcel_id", "area", "land_use_class", "heated_area", "bedrooms", "bathrooms",
-    "acreage", "total_value", "neighborhood_code",
+    "parcel_id",
+    "area",
+    "land_use_class",
+    "heated_area",
+    "bedrooms",
+    "bathrooms",
+    "acreage",
+    "total_value",
+    "neighborhood_code",
 ]
 DEAL_DISPLAY_COLUMNS = [
-    "parcel_id", "area", "sale_price", "predicted_value", "deal_score", "sale_date",
-    "land_use_class", "heated_area", "bedrooms", "bathrooms", "neighborhood_code",
+    "parcel_id",
+    "area",
+    "sale_price",
+    "predicted_value",
+    "deal_score",
+    "sale_date",
+    "land_use_class",
+    "heated_area",
+    "bedrooms",
+    "bathrooms",
+    "neighborhood_code",
 ]
 # lookup_property returns every model feature, so its result can be passed straight
 # into predict_total_value / find_similar_houses instead of relying on imputed values.
 PROPERTY_DISPLAY_COLUMNS = [
-    "parcel_id", "situs_street_num", "situs_street_name", "situs_city", "neighborhood_code",
-    "total_value", "land_value", "building_value", "sale_price", "sale_date",
-    "elementary_school", "middle_school", "high_school",
+    "parcel_id",
+    "situs_street_num",
+    "situs_street_name",
+    "situs_city",
+    "neighborhood_code",
+    "total_value",
+    "land_value",
+    "building_value",
+    "sale_price",
+    "sale_date",
+    "elementary_school",
+    "middle_school",
+    "high_school",
 ] + FEATURE_COLUMNS
 
 # find_houses' results: what a buyer compares, kept short since the model reads every row
 HOUSE_DISPLAY_COLUMNS = [
-    "parcel_id", "address", "area", "land_use_class", "bedrooms", "bathrooms", "heated_area",
-    "year_built", "estimated_price", "school_score", "light_rail_miles",
+    "parcel_id",
+    "address",
+    "area",
+    "land_use_class",
+    "bedrooms",
+    "bathrooms",
+    "heated_area",
+    "year_built",
+    "estimated_price",
+    "school_score",
+    "light_rail_miles",
 ]
 # find_houses' sort options -> ascending. Not price_per_sqft: its cheapest end is mostly
 # records that are wrong or misleading (see MIN_MEDIAN_PRICE_SHARE), not bargains.
@@ -99,7 +134,7 @@ def _load_features_df(features_path):
     return read_dataframe_cached(features_path, "properties_features.csv")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _index(feature_set):
     """The feature table + a NearestNeighbors index over its preprocessed features for
     one feature set, cached so repeated queries don't reload/refit. Houses with no
@@ -124,8 +159,9 @@ def find_similar_houses(features, k=5, feature_set=DEFAULT_FEATURE_SET):
     return results.to_dict(orient="records")
 
 
-def find_deals(model_name=DEFAULT_MODEL_NAME, feature_set=DEFAULT_FEATURE_SET, top_n=10,
-               min_sale_price=10_000, area=None):
+def find_deals(
+    model_name=DEFAULT_MODEL_NAME, feature_set=DEFAULT_FEATURE_SET, top_n=10, min_sale_price=10_000, area=None
+):
     """Past arms-length sales where sale_price came in well below what the trained
     model would have predicted for that property - the biggest retrospective deals.
     deal_score = (predicted_value - sale_price) / predicted_value; higher = bigger deal.
@@ -174,10 +210,7 @@ def lookup_property(address=None, parcel_id=None, limit=5):
         if not parsed:
             raise ValueError(f"expected an address starting with a house number, got {address!r}")
         number, street_word = int(parsed.group(1)), parsed.group(2).upper()
-        match = df[
-            (df["situs_street_num"] == number)
-            & (df["situs_street_name"].str.split().str[0] == street_word)
-        ]
+        match = df[(df["situs_street_num"] == number) & (df["situs_street_name"].str.split().str[0] == street_word)]
         cities = [c for c in match["situs_city"].dropna().unique() if c in address.upper()]
         if cities:
             match = match[match["situs_city"].isin(cities)]
@@ -244,17 +277,32 @@ def _priced_houses(as_of):
     df = _load_features_df(resolve_path(load_config(), "features_data"))
     df = df[df["total_value"].gt(0) & df["heated_area"].gt(0)].drop_duplicates("parcel_id")
     price = market_estimate.market_values(df, as_of)
-    df = df.assign(estimated_price=price, price_per_sqft=price / df["heated_area"],
-                   school_score=df[SCHOOL_SCORE_COLUMNS].mean(axis=1))
+    df = df.assign(
+        estimated_price=price,
+        price_per_sqft=price / df["heated_area"],
+        school_score=df[SCHOOL_SCORE_COLUMNS].mean(axis=1),
+    )
     too_low = df["price_per_sqft"] < MIN_PRICE_PER_SQFT
     for group in ["neighborhood_code", "area"]:
-        too_low |= df["price_per_sqft"] < MIN_MEDIAN_PRICE_SHARE * df.groupby(group)["price_per_sqft"].transform("median")
+        too_low |= df["price_per_sqft"] < MIN_MEDIAN_PRICE_SHARE * df.groupby(group)["price_per_sqft"].transform(
+            "median"
+        )
     return df[~too_low].dropna(subset=["estimated_price"])
 
 
-def find_houses(max_price=None, area=None, land_use_class=None, min_bedrooms=None, min_bathrooms=None,
-                min_heated_area=None, min_year_built=None, min_school_score=None, max_light_rail_miles=None,
-                sort_by="school_score", top_n=5):
+def find_houses(
+    max_price=None,
+    area=None,
+    land_use_class=None,
+    min_bedrooms=None,
+    min_bathrooms=None,
+    min_heated_area=None,
+    min_year_built=None,
+    min_school_score=None,
+    max_light_rail_miles=None,
+    sort_by="school_score",
+    top_n=5,
+):
     """Existing houses matching a buyer's criteria, priced at today's estimated market value:
     {"matches": how many, "by_area": matches per area with their median price, $/sqft, school
     score and light rail distance, most matches first,
@@ -267,10 +315,15 @@ def find_houses(max_price=None, area=None, land_use_class=None, min_bedrooms=Non
     for column, value in [("area", area), ("land_use_class", land_use_class)]:
         if value is not None and value not in df[column].values:
             raise ValueError(f"unknown {column} {value!r}, expected one of {sorted(df[column].dropna().unique())}")
-    limits = [("estimated_price", max_price, "max"), ("light_rail_miles", max_light_rail_miles, "max"),
-              ("bedrooms", min_bedrooms, "min"), ("bathrooms", min_bathrooms, "min"),
-              ("heated_area", min_heated_area, "min"), ("year_built", min_year_built, "min"),
-              ("school_score", min_school_score, "min")]
+    limits = [
+        ("estimated_price", max_price, "max"),
+        ("light_rail_miles", max_light_rail_miles, "max"),
+        ("bedrooms", min_bedrooms, "min"),
+        ("bathrooms", min_bathrooms, "min"),
+        ("heated_area", min_heated_area, "min"),
+        ("year_built", min_year_built, "min"),
+        ("school_score", min_school_score, "min"),
+    ]
     keep = pd.Series(True, index=df.index)
     for column, value in [("area", area), ("land_use_class", land_use_class)]:
         if value is not None:
@@ -280,16 +333,34 @@ def find_houses(max_price=None, area=None, land_use_class=None, min_bedrooms=Non
             keep &= df[column] <= value if kind == "max" else df[column] >= value
     matches = df[keep]
 
-    by_area = matches.groupby("area").agg(
-        houses=("parcel_id", "size"), median_estimated_price=("estimated_price", "median"),
-        median_price_per_sqft=("price_per_sqft", "median"), median_school_score=("school_score", "median"),
-        median_light_rail_miles=("light_rail_miles", "median"),
-    ).sort_values("houses", ascending=False).round(
-        {"median_estimated_price": 0, "median_price_per_sqft": 0, "median_school_score": 1, "median_light_rail_miles": 1}
-    ).reset_index()
+    by_area = (
+        matches.groupby("area")
+        .agg(
+            houses=("parcel_id", "size"),
+            median_estimated_price=("estimated_price", "median"),
+            median_price_per_sqft=("price_per_sqft", "median"),
+            median_school_score=("school_score", "median"),
+            median_light_rail_miles=("light_rail_miles", "median"),
+        )
+        .sort_values("houses", ascending=False)
+        .round(
+            {
+                "median_estimated_price": 0,
+                "median_price_per_sqft": 0,
+                "median_school_score": 1,
+                "median_light_rail_miles": 1,
+            }
+        )
+        .reset_index()
+    )
     top = matches.sort_values(sort_by, ascending=HOUSE_SORT_ORDERS[sort_by]).head(top_n)
-    top = top.assign(address=top["situs_street_num"].map(lambda n: f"{n:.0f}" if pd.notna(n) else "")
-                     + " " + top["situs_street_name"].fillna("") + ", " + top["situs_city"].fillna(""))
+    top = top.assign(
+        address=top["situs_street_num"].map(lambda n: f"{n:.0f}" if pd.notna(n) else "")
+        + " "
+        + top["situs_street_name"].fillna("")
+        + ", "
+        + top["situs_city"].fillna("")
+    )
     houses = top[HOUSE_DISPLAY_COLUMNS].round({"estimated_price": 0, "school_score": 1, "light_rail_miles": 1})
     return {
         "matches": len(matches),

@@ -15,7 +15,6 @@ import os
 import re
 import textwrap
 import threading
-from typing import Optional
 
 import anthropic
 import requests
@@ -68,8 +67,10 @@ HELP_REPLY = (
     'For example: "What is 3612 Abbey Hill Ln, Charlotte worth today?"'
 )
 EMPTY_REPLY = "I didn't catch that. Ask me about a house in Mecklenburg County."
-TOO_LONG_REPLY = (f"That message is too long for me. Please keep it under {MAX_QUESTION_CHARS:,} characters "
-                  "and ask about a house in Mecklenburg County.")
+TOO_LONG_REPLY = (
+    f"That message is too long for me. Please keep it under {MAX_QUESTION_CHARS:,} characters "
+    "and ask about a house in Mecklenburg County."
+)
 MORE_INFO_REPLY = (
     "Could you tell me a bit more? For example:\n"
     '- "What is 3612 Abbey Hill Ln, Charlotte worth today?"\n'
@@ -79,21 +80,28 @@ MORE_INFO_REPLY = (
 # A first message this short with no number ("house", "Matthews", "price?") is too vague to
 # answer; one with a number ("3612 Abbey Hill", "$400k") is an address, parcel or budget.
 MAX_VAGUE_WORDS = 2
-OFF_TOPIC_REPLY = ("Sorry, I can only help with houses in Mecklenburg County, NC: what a house is worth, "
-                   "recommendations, areas and comparable houses.")
+OFF_TOPIC_REPLY = (
+    "Sorry, I can only help with houses in Mecklenburg County, NC: what a house is worth, "
+    "recommendations, areas and comparable houses."
+)
 # Whole messages (lowercased, punctuation removed) that are only small talk. Not "ok", "sure"
 # or "yes": those can answer a question the model just asked, so they go to the model.
 SMALL_TALK = [
-    (r"(hi|hello|hey|hiya|howdy|yo|greetings|good (morning|afternoon|evening|day))( there| all| everyone)?"
-     r"( how are you( doing)?| how's it going| what's up| whats up)?", GREETING_REPLY),
+    (
+        r"(hi|hello|hey|hiya|howdy|yo|greetings|good (morning|afternoon|evening|day))( there| all| everyone)?"
+        r"( how are you( doing)?| how's it going| what's up| whats up)?",
+        GREETING_REPLY,
+    ),
     (r"(thanks|thank you|thank u|thx|ty|cheers|appreciate it)( so much| a lot| very much)?", THANKS_REPLY),
     (r"bye|goodbye|good bye|see (you|ya)( later)?|that's all|thats all|i'm done|im done", GOODBYE_REPLY),
-    (r"help|what can you do|what do you do|who are you|what are you|how does this work|how do i use (this|you)",
-     HELP_REPLY),
+    (
+        r"help|what can you do|what do you do|who are you|what are you|how does this work|how do i use (this|you)",
+        HELP_REPLY,
+    ),
 ]
 
 
-def quick_reply(message: str, follow_up: bool = False) -> Optional[str]:
+def quick_reply(message: str, follow_up: bool = False) -> str | None:
     """A fixed reply that skips the model, which took 1 to 8 seconds on these, else None:
     for a message over MAX_QUESTION_CHARS, one that is only small talk (a greeting, thanks, goodbye or a request for
     help) or has no words at all, and for a first message of MAX_VAGUE_WORDS or fewer with
@@ -109,6 +117,7 @@ def quick_reply(message: str, follow_up: bool = False) -> Optional[str]:
     if reply is None and not follow_up and len(words.split()) <= MAX_VAGUE_WORDS and not re.search(r"\d", words):
         return MORE_INFO_REPLY
     return reply
+
 
 SYSTEM_PROMPT = (
     "You are a house-value assistant for Mecklenburg County, North Carolina, and help only "
@@ -203,14 +212,14 @@ def _tool_error(e):
 @beta_tool
 @_with_feature_docs
 def predict_total_value(
-    parcel_id: Optional[str] = None,
-    land_use_class: Optional[str] = None,
-    area: Optional[str] = None,
-    acreage: Optional[float] = None,
-    year_built: Optional[float] = None,
-    heated_area: Optional[float] = None,
-    bedrooms: Optional[float] = None,
-    bathrooms: Optional[float] = None,
+    parcel_id: str | None = None,
+    land_use_class: str | None = None,
+    area: str | None = None,
+    acreage: float | None = None,
+    year_built: float | None = None,
+    heated_area: float | None = None,
+    bedrooms: float | None = None,
+    bathrooms: float | None = None,
     feature_set: str = predict.DEFAULT_FEATURE_SET,
 ) -> str:
     """Estimate a Mecklenburg property's 2023 assessed value (total_value) from its features.
@@ -237,14 +246,14 @@ def predict_total_value(
 @beta_tool
 @_with_feature_docs
 def find_similar_houses(
-    parcel_id: Optional[str] = None,
-    land_use_class: Optional[str] = None,
-    area: Optional[str] = None,
-    acreage: Optional[float] = None,
-    year_built: Optional[float] = None,
-    heated_area: Optional[float] = None,
-    bedrooms: Optional[float] = None,
-    bathrooms: Optional[float] = None,
+    parcel_id: str | None = None,
+    land_use_class: str | None = None,
+    area: str | None = None,
+    acreage: float | None = None,
+    year_built: float | None = None,
+    heated_area: float | None = None,
+    bedrooms: float | None = None,
+    bathrooms: float | None = None,
     feature_set: str = predict.DEFAULT_FEATURE_SET,
     k: int = 5,
 ) -> str:
@@ -265,7 +274,7 @@ def find_similar_houses(
 def find_deals(
     feature_set: str = predict.DEFAULT_FEATURE_SET,
     top_n: int = 10,
-    area: Optional[str] = None,
+    area: str | None = None,
 ) -> str:
     """Find past arms-length sales in Mecklenburg priced well below the trained model's
     estimate for that property - retrospective "deals", not houses for sale now. Some
@@ -288,15 +297,15 @@ def find_deals(
 
 @beta_tool
 def find_houses(
-    max_price: Optional[float] = None,
-    area: Optional[str] = None,
-    land_use_class: Optional[str] = None,
-    min_bedrooms: Optional[float] = None,
-    min_bathrooms: Optional[float] = None,
-    min_heated_area: Optional[float] = None,
-    min_year_built: Optional[float] = None,
-    min_school_score: Optional[float] = None,
-    max_light_rail_miles: Optional[float] = None,
+    max_price: float | None = None,
+    area: str | None = None,
+    land_use_class: str | None = None,
+    min_bedrooms: float | None = None,
+    min_bathrooms: float | None = None,
+    min_heated_area: float | None = None,
+    min_year_built: float | None = None,
+    min_school_score: float | None = None,
+    max_light_rail_miles: float | None = None,
     sort_by: str = "school_score",
     top_n: int = 5,
 ) -> str:
@@ -319,18 +328,28 @@ def find_houses(
         top_n: Number of example houses to return, at most 5.
     """
     try:
-        return json.dumps(search.find_houses(
-            max_price=max_price, area=area, land_use_class=land_use_class, min_bedrooms=min_bedrooms,
-            min_bathrooms=min_bathrooms, min_heated_area=min_heated_area, min_year_built=min_year_built,
-            min_school_score=min_school_score, max_light_rail_miles=max_light_rail_miles,
-            sort_by=sort_by, top_n=min(top_n, 5),
-        ), default=str)
+        return json.dumps(
+            search.find_houses(
+                max_price=max_price,
+                area=area,
+                land_use_class=land_use_class,
+                min_bedrooms=min_bedrooms,
+                min_bathrooms=min_bathrooms,
+                min_heated_area=min_heated_area,
+                min_year_built=min_year_built,
+                min_school_score=min_school_score,
+                max_light_rail_miles=max_light_rail_miles,
+                sort_by=sort_by,
+                top_n=min(top_n, 5),
+            ),
+            default=str,
+        )
     except (ValueError, FileNotFoundError) as e:
         return _tool_error(e)
 
 
 @beta_tool
-def lookup_property(address: Optional[str] = None, parcel_id: Optional[str] = None) -> str:
+def lookup_property(address: str | None = None, parcel_id: str | None = None) -> str:
     """Look up a Mecklenburg property's county record by street address or parcel id: its
     assessed value, last sale and every model feature. Pass its parcel_id to the other
     tools. May return several matches, or none.
@@ -346,7 +365,7 @@ def lookup_property(address: Optional[str] = None, parcel_id: Optional[str] = No
 
 
 @beta_tool
-def area_stats(area: Optional[str] = None) -> str:
+def area_stats(area: str | None = None) -> str:
     """Typical values per area: house count, median assessed value, size, year built, recent
     sale $/sqft, price_momentum and accessibility. Use it to compare areas, or for typical
     feature values when the user describes a house without an address.
@@ -363,9 +382,9 @@ def area_stats(area: Optional[str] = None) -> str:
 @beta_tool
 def estimate_market_value(
     parcel_id: str,
-    heated_area: Optional[float] = None,
-    bedrooms: Optional[float] = None,
-    bathrooms: Optional[float] = None,
+    heated_area: float | None = None,
+    bedrooms: float | None = None,
+    bathrooms: float | None = None,
 ) -> str:
     """Estimate what a Mecklenburg property would sell for today, with an 80% range: its
     2023 assessed value times the median sale / assessed ratio of recent sales in its
@@ -381,8 +400,11 @@ def estimate_market_value(
         bedrooms: New number of bedrooms, for a what-if.
         bathrooms: New number of bathrooms (half baths count as 0.5), for a what-if.
     """
-    changes = {k: v for k, v in [("heated_area", heated_area), ("bedrooms", bedrooms), ("bathrooms", bathrooms)]
-               if v is not None}
+    changes = {
+        k: v
+        for k, v in [("heated_area", heated_area), ("bedrooms", bedrooms), ("bathrooms", bathrooms)]
+        if v is not None
+    }
     try:
         matches = search.lookup_property(parcel_id=parcel_id)
         if not matches:
@@ -394,12 +416,23 @@ def estimate_market_value(
     return json.dumps(result, default=str)
 
 
-TOOLS = [lookup_property, area_stats, estimate_market_value, find_houses, predict_total_value, find_similar_houses,
-         find_deals]
+TOOLS = [
+    lookup_property,
+    area_stats,
+    estimate_market_value,
+    find_houses,
+    predict_total_value,
+    find_similar_houses,
+    find_deals,
+]
 # TOOLS' schemas from @beta_tool, in Ollama's format
-OLLAMA_TOOLS = [{"type": "function", "function": {"name": d["name"], "description": d["description"],
-                                                  "parameters": d["input_schema"]}}
-                for d in (t.to_dict() for t in TOOLS)]
+OLLAMA_TOOLS = [
+    {
+        "type": "function",
+        "function": {"name": d["name"], "description": d["description"], "parameters": d["input_schema"]},
+    }
+    for d in (t.to_dict() for t in TOOLS)
+]
 
 _warm_up_threads = {}  # "data" / "model" -> thread
 
@@ -485,14 +518,24 @@ def _call_tool(tools, call) -> str:
 def _ollama_chat(messages: list, **options) -> dict:
     """One Ollama /api/chat request with SYSTEM_PROMPT and TOOLS; return the model's message."""
     try:
-        response = requests.post(f"{OLLAMA_URL}/api/chat", timeout=600, json={
-            "model": MODEL, "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
-            "tools": OLLAMA_TOOLS, "stream": False, "think": OLLAMA_THINK, "keep_alive": OLLAMA_KEEP_ALIVE,
-            "options": {"num_ctx": OLLAMA_CONTEXT, **options},
-        })
+        response = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            timeout=600,
+            json={
+                "model": MODEL,
+                "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+                "tools": OLLAMA_TOOLS,
+                "stream": False,
+                "think": OLLAMA_THINK,
+                "keep_alive": OLLAMA_KEEP_ALIVE,
+                "options": {"num_ctx": OLLAMA_CONTEXT, **options},
+            },
+        )
     except requests.ConnectionError:
-        raise SystemExit(f"Ollama is not running at {OLLAMA_URL}: start it with `ollama serve`, "
-                         f"or set ASSISTANT_MODEL to a Claude model") from None
+        raise SystemExit(
+            f"Ollama is not running at {OLLAMA_URL}: start it with `ollama serve`, "
+            f"or set ASSISTANT_MODEL to a Claude model"
+        ) from None
     if response.status_code == 404:
         raise SystemExit(f"{response.json().get('error')} - run `ollama pull {MODEL}`")
     response.raise_for_status()
@@ -519,9 +562,12 @@ def _fit_history(messages: list) -> list:
     are listed before the first turn kept, so the model still knows what was asked and can
     call a tool again for an earlier answer. The caller keeps the full conversation."""
     history, question = messages[:-1], messages[-1]
-    turns = [history[i:i + 2] for i in range(0, len(history), 2)]
+    turns = [history[i : i + 2] for i in range(0, len(history), 2)]
     dropped = 0
-    while dropped < len(turns) and sum(len(str(m["content"])) for turn in turns[dropped:] for m in turn) > MAX_HISTORY_CHARS:
+    while (
+        dropped < len(turns)
+        and sum(len(str(m["content"])) for turn in turns[dropped:] for m in turn) > MAX_HISTORY_CHARS
+    ):
         dropped += HISTORY_DROP_TURNS
     if not dropped:
         return messages
@@ -540,8 +586,11 @@ def _run(messages: list) -> tuple[str, dict]:
     messages = _fit_history(messages)
     if MODEL.startswith("claude"):
         message = _run_claude(messages)
-        text = ("The request was declined." if message.stop_reason == "refusal"
-                else next((b.text for b in message.content if b.type == "text"), ""))
+        text = (
+            "The request was declined."
+            if message.stop_reason == "refusal"
+            else next((b.text for b in message.content if b.type == "text"), "")
+        )
         return text, {"role": "assistant", "content": message.content}
     _wait_for_warm_up("model")
     message = _run_ollama(messages)
@@ -576,6 +625,7 @@ def chat():
 
 if __name__ == "__main__":
     import sys
+
     if sys.argv[1:]:
         warm_up(model=False)  # the data loads while the model reads the question
         print(ask(" ".join(sys.argv[1:])))

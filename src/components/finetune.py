@@ -27,10 +27,20 @@ import pandas as pd
 from sklearn.base import clone
 
 from src.components.evaluating import (
-    DISPLAY_COLUMNS, add_estimates, load_splits, print_validation, select_houses,
+    DISPLAY_COLUMNS,
+    add_estimates,
+    load_splits,
+    print_validation,
+    select_houses,
 )
 from src.components.training import (
-    FEATURE_SETS, MODEL_TYPES, SELECTION_METRIC, TARGET, build_preprocessor, build_search_estimators, eval_metrics,
+    FEATURE_SETS,
+    MODEL_TYPES,
+    SELECTION_METRIC,
+    TARGET,
+    build_preprocessor,
+    build_search_estimators,
+    eval_metrics,
     save_artifacts,
 )
 from src.utils.common import resolve_path, save_dataframe
@@ -53,7 +63,7 @@ def best_previous_model(reports_path):
 
 def build_model(model_name, params, training_cfg):
     """The same estimator training.py searches over, with the given settings."""
-    search = build_search_estimators(training_cfg["random_state"], training_cfg)[model_name]
+    search = build_search_estimators(training_cfg["random_state"], training_cfg, [model_name])[model_name]
     model = clone(search.estimator).set_params(**params)
     # training.py runs each fit single-threaded and parallelizes the search instead; a
     # single random forest fit can use every core. xgboost stays at n_jobs=1, which it
@@ -99,10 +109,12 @@ def run():
     model.fit(preprocessor.fit_transform(train[features]), np.log1p(train[TARGET]))
 
     preds = np.expm1(model.predict(preprocessor.transform(test[features])))
-    metrics = pd.DataFrame({
-        "last_run": previous[METRICS].astype(float),
-        "finetuned": pd.Series(eval_metrics(test[TARGET], preds)),
-    })
+    metrics = pd.DataFrame(
+        {
+            "last_run": previous[METRICS].astype(float),
+            "finetuned": pd.Series(eval_metrics(test[TARGET], preds)),
+        }
+    )
     metrics["change"] = metrics["finetuned"] - metrics["last_run"]
     print(metrics.to_string(float_format=lambda x: f"{x:,.4f}"))
     print()
@@ -111,7 +123,9 @@ def run():
     add_estimates(results, houses, "finetuned", preprocessor, model, features)
     print_validation(results)
 
-    save_artifacts(resolve_path(cfg, "models") + FINETUNED_DIR, {feature_set: preprocessor}, {(feature_set, model_name): model})
+    save_artifacts(
+        resolve_path(cfg, "models") + FINETUNED_DIR, {feature_set: preprocessor}, {(feature_set, model_name): model}
+    )
     save_dataframe(metrics.rename_axis("metric").reset_index(), reports_path, "finetuned_metrics.csv")
     save_dataframe(results, reports_path, "finetuned_validation_houses.csv")
     return metrics, results

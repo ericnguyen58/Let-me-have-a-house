@@ -29,8 +29,14 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 
 from src.components import predict
 from src.components.training import (
-    FEATURE_COLUMNS, FEATURE_SETS, MODEL_TYPES, NEIGHBORHOOD_PRICE, TARGET,
-    build_preprocessor, load_training_data, split_with_aggregates,
+    FEATURE_COLUMNS,
+    FEATURE_SETS,
+    MODEL_TYPES,
+    NEIGHBORHOOD_PRICE,
+    TARGET,
+    build_preprocessor,
+    load_training_data,
+    split_with_aggregates,
 )
 from src.utils.common import resolve_path, save_dataframe
 from src.utils.load_config import load_config
@@ -40,8 +46,15 @@ FEATURE_GROUPS = {
     "house": ["land_use_class", "acreage", "year_built", "property_age", "heated_area", "bedrooms", "bathrooms"],
     "location": ["area", "latitude", "longitude", "neighborhood_sale_count", "price_momentum"],
     "neighborhood_price": [NEIGHBORHOOD_PRICE],
-    "accessibility": ["education_nearest_miles", "places_count", "health_care_share", "activity_share",
-                      "emergency_fire_miles", "emergency_police_miles", "emergency_medical_miles"],
+    "accessibility": [
+        "education_nearest_miles",
+        "places_count",
+        "health_care_share",
+        "activity_share",
+        "emergency_fire_miles",
+        "emergency_police_miles",
+        "emergency_medical_miles",
+    ],
     "school": ["elementary_school_score", "middle_school_score", "high_school_score"],
     "crime": ["violent_crime_rate", "property_crime_rate"],
     "flood": ["in_floodplain"],
@@ -52,8 +65,16 @@ HOUSE_FEATURES = FEATURE_GROUPS["house"]
 
 VALIDATION_SIZE = 10
 DISPLAY_COLUMNS = [
-    "parcel_id", "area", "land_use_class", "heated_area", "bedrooms", "bathrooms",
-    "year_built", "sale_price", "sale_date", TARGET,
+    "parcel_id",
+    "area",
+    "land_use_class",
+    "heated_area",
+    "bedrooms",
+    "bathrooms",
+    "year_built",
+    "sale_price",
+    "sale_date",
+    TARGET,
 ]
 
 
@@ -128,7 +149,11 @@ def production_model(feature_set, random_state):
     with open(path) as f:
         params = json.load(f)[f"{feature_set}__hist_gradient_boosting"]
     return HistGradientBoostingRegressor(
-        **params, max_iter=3000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=50,
+        **params,
+        max_iter=3000,
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=50,
         random_state=random_state,
     )
 
@@ -136,8 +161,7 @@ def production_model(feature_set, random_state):
 def fit_and_predict(train, test, features, feature_set, random_state):
     """Test-set predictions in dollars of a production model fit on `features`."""
     pre = build_preprocessor(features)
-    model = production_model(feature_set, random_state).fit(
-        pre.fit_transform(train[features]), np.log1p(train[TARGET]))
+    model = production_model(feature_set, random_state).fit(pre.fit_transform(train[features]), np.log1p(train[TARGET]))
     return np.expm1(model.predict(pre.transform(test[features])))
 
 
@@ -147,8 +171,9 @@ def paired_bootstrap(actual, base_pred, pred, n=BOOTSTRAP_SAMPLES, seed=0):
     base_abs, abs_ = np.abs(base_pred - actual), np.abs(pred - actual)
     d_mae, d_pct = abs_ - base_abs, (abs_ - base_abs) / actual
     rng = np.random.default_rng(seed)
-    samples = np.array([(d_mae[i].mean(), d_pct[i].mean())
-                        for i in (rng.integers(0, len(actual), len(actual)) for _ in range(n))])
+    samples = np.array(
+        [(d_mae[i].mean(), d_pct[i].mean()) for i in (rng.integers(0, len(actual), len(actual)) for _ in range(n))]
+    )
     return np.percentile(samples[:, 0], [2.5, 97.5]), np.percentile(samples[:, 1], [2.5, 97.5])
 
 
@@ -186,16 +211,31 @@ def drop_column_test(feature_set, train=None, test=None):
         pred = fit_and_predict(train, test, kept, feature_set, seed)
         mae, pct = errors(pred)
         mae_ci, pct_ci = paired_bootstrap(actual, base_pred, pred)
-        rows.append({
-            "feature_set": feature_set, "dropped": name, "kind": "group" if name in FEATURE_GROUPS else "feature",
-            "mae": mae, "pct_error": pct, "mae_change": mae - base_mae, "pct_error_change": pct - base_pct,
-            "mae_change_low": mae_ci[0], "mae_change_high": mae_ci[1],
-            "pct_error_change_low": pct_ci[0], "pct_error_change_high": pct_ci[1],
-            "seed_noise": seed_noise,
-            "real": bool((pct_ci[0] > 0 or pct_ci[1] < 0) and abs(pct - base_pct) > seed_noise),
-        })
-    full = {"feature_set": feature_set, "dropped": "(none)", "kind": "full", "mae": base_mae,
-            "pct_error": base_pct, "seed_noise": seed_noise}
+        rows.append(
+            {
+                "feature_set": feature_set,
+                "dropped": name,
+                "kind": "group" if name in FEATURE_GROUPS else "feature",
+                "mae": mae,
+                "pct_error": pct,
+                "mae_change": mae - base_mae,
+                "pct_error_change": pct - base_pct,
+                "mae_change_low": mae_ci[0],
+                "mae_change_high": mae_ci[1],
+                "pct_error_change_low": pct_ci[0],
+                "pct_error_change_high": pct_ci[1],
+                "seed_noise": seed_noise,
+                "real": bool((pct_ci[0] > 0 or pct_ci[1] < 0) and abs(pct - base_pct) > seed_noise),
+            }
+        )
+    full = {
+        "feature_set": feature_set,
+        "dropped": "(none)",
+        "kind": "full",
+        "mae": base_mae,
+        "pct_error": base_pct,
+        "seed_noise": seed_noise,
+    }
     return pd.DataFrame([full, *rows])
 
 
@@ -236,6 +276,7 @@ def typical_house(houses, land_use_class):
 def reference_houses(houses):
     """{name: house row}: the config test addresses and the typical house of each class."""
     from src.components.search import lookup_property  # search imports training
+
     refs = {}
     for address in load_config()["test_addresses"]:
         parcel = lookup_property(address)[0]["parcel_id"]
@@ -248,8 +289,7 @@ def reference_houses(houses):
 def donors(houses, land_use_class, seed=0):
     """(per-area donors, county-wide donors) of `land_use_class`."""
     same = houses[houses["land_use_class"] == land_use_class]
-    per_area = pd.concat([g.sample(min(len(g), DONORS_PER_AREA), random_state=seed)
-                          for _, g in same.groupby("area")])
+    per_area = pd.concat([g.sample(min(len(g), DONORS_PER_AREA), random_state=seed) for _, g in same.groupby("area")])
     county = same.sample(min(len(same), COUNTY_DONORS), random_state=seed)
     return per_area, county
 
@@ -281,11 +321,17 @@ def raw_area_prices(houses, house):
     """Per area, median total_value / heated_area of houses of the same class within
     RAW_SIZE_BAND of `house`'s size, times its size: an estimate with no model."""
     size = house["heated_area"]
-    same = houses[(houses["land_use_class"] == house["land_use_class"])
-                  & houses["heated_area"].between(size * (1 - RAW_SIZE_BAND), size * (1 + RAW_SIZE_BAND))]
+    same = houses[
+        (houses["land_use_class"] == house["land_use_class"])
+        & houses["heated_area"].between(size * (1 - RAW_SIZE_BAND), size * (1 + RAW_SIZE_BAND))
+    ]
     per_sqft = same[TARGET] / same["heated_area"]
-    return pd.DataFrame({"raw_estimate": per_sqft.groupby(same["area"]).median() * size,
-                         "raw_houses": per_sqft.groupby(same["area"]).size()})
+    return pd.DataFrame(
+        {
+            "raw_estimate": per_sqft.groupby(same["area"]).median() * size,
+            "raw_houses": per_sqft.groupby(same["area"]).size(),
+        }
+    )
 
 
 def same_house_by_area(houses=None, refs=None):
@@ -301,26 +347,41 @@ def same_house_by_area(houses=None, refs=None):
         area_rows, county_rows = with_house(per_area, house), with_house(county, house)
         covered = size_coverage(houses, per_area, house)
         raw = raw_area_prices(houses, house)
-        raw_county = (houses.loc[houses["land_use_class"] == house["land_use_class"]]
-                      .pipe(lambda h: h[h["heated_area"].between(house["heated_area"] * (1 - RAW_SIZE_BAND),
-                                                                  house["heated_area"] * (1 + RAW_SIZE_BAND))])
-                      .pipe(lambda h: (h[TARGET] / h["heated_area"]).median() * house["heated_area"]))
+        raw_county = (
+            houses.loc[houses["land_use_class"] == house["land_use_class"]]
+            .pipe(
+                lambda h: h[
+                    h["heated_area"].between(
+                        house["heated_area"] * (1 - RAW_SIZE_BAND), house["heated_area"] * (1 + RAW_SIZE_BAND)
+                    )
+                ]
+            )
+            .pipe(lambda h: (h[TARGET] / h["heated_area"]).median() * house["heated_area"])
+        )
         for feature_set in FEATURE_SETS:
             log_area, log_county = log_estimates(area_rows, feature_set), log_estimates(county_rows, feature_set)
             frame = pd.DataFrame({"area": per_area["area"].to_numpy(), "log": log_area, "covered": covered})
             for area, g in frame.groupby("area"):
                 dollars = np.expm1(g["log"])
-                rows.append({
-                    "house": name, "land_use_class": house["land_use_class"], "heated_area": house["heated_area"],
-                    "assessed": house[TARGET], "feature_set": feature_set, "area": area, "donors": len(g),
-                    "estimate": dollars.median(), "estimate_p10": dollars.quantile(0.1),
-                    "estimate_p90": dollars.quantile(0.9),
-                    "premium": math.expm1(g["log"].mean() - log_county.mean()),
-                    "size_coverage": g["covered"].mean(),
-                    "raw_estimate": raw["raw_estimate"].get(area, np.nan),
-                    "raw_houses": raw["raw_houses"].get(area, 0),
-                    "raw_premium": raw["raw_estimate"].get(area, np.nan) / raw_county - 1,
-                })
+                rows.append(
+                    {
+                        "house": name,
+                        "land_use_class": house["land_use_class"],
+                        "heated_area": house["heated_area"],
+                        "assessed": house[TARGET],
+                        "feature_set": feature_set,
+                        "area": area,
+                        "donors": len(g),
+                        "estimate": dollars.median(),
+                        "estimate_p10": dollars.quantile(0.1),
+                        "estimate_p90": dollars.quantile(0.9),
+                        "premium": math.expm1(g["log"].mean() - log_county.mean()),
+                        "size_coverage": g["covered"].mean(),
+                        "raw_estimate": raw["raw_estimate"].get(area, np.nan),
+                        "raw_houses": raw["raw_houses"].get(area, 0),
+                        "raw_premium": raw["raw_estimate"].get(area, np.nan) / raw_county - 1,
+                    }
+                )
     return pd.DataFrame(rows)
 
 
@@ -354,11 +415,19 @@ def area_premium_decomposition(house, houses, feature_set=DECOMPOSITION_FEATURE_
             for g in c:
                 mixed[FEATURE_GROUPS[g]] = a[FEATURE_GROUPS[g]]
             value[c] = log_estimates(mixed, feature_set).mean()
-        share = {g: sum(weights[len(c)] * (value[c | {g}] - value[c]) for c in coalitions if g not in c)
-                 for g in groups}
+        share = {
+            g: sum(weights[len(c)] * (value[c | {g}] - value[c]) for c in coalitions if g not in c) for g in groups
+        }
         total = value[frozenset(groups)] - value[frozenset()]
-        rows.append({"area": area, "feature_set": feature_set, "log_premium": total,
-                     "premium": math.expm1(total), **{f"{g}_log": v for g, v in share.items()}})
+        rows.append(
+            {
+                "area": area,
+                "feature_set": feature_set,
+                "log_premium": total,
+                "premium": math.expm1(total),
+                **{f"{g}_log": v for g, v in share.items()},
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -369,8 +438,13 @@ def run_same_house_by_area():
     by_area = same_house_by_area(houses, refs)
     save_dataframe(by_area, reports, "same_house_by_area.csv")
     decomposition = pd.concat(
-        [area_premium_decomposition(refs[name], houses).assign(house=name)
-         for name in refs if name.startswith("typical")], ignore_index=True)
+        [
+            area_premium_decomposition(refs[name], houses).assign(house=name)
+            for name in refs
+            if name.startswith("typical")
+        ],
+        ignore_index=True,
+    )
     save_dataframe(decomposition, reports, "area_premium_decomposition.csv")
     return by_area, decomposition
 

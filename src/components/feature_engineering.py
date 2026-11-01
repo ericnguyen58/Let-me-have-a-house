@@ -36,15 +36,17 @@ training.py recomputes both from its training rows only.
 
 import re
 from datetime import datetime
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree
+
 from src.utils.common import read_dataframe, resolve_path, save_dataframe
 from src.utils.load_config import load_config
 
 CURRENT_YEAR = datetime.now().year
-EARTH_RADIUS = 3959 #miles
+EARTH_RADIUS = 3959  # miles
 
 # price_momentum window: the three years before the January 1, 2023 revaluation that
 # total_value comes from, so the feature carries nothing from after the target date.
@@ -70,21 +72,35 @@ MAX_DISTANCE_MILES = 20
 ED_NAME_PATTERN = r"(?i:emergency department|emergency room)|\b(?:ER|ED)$"
 ED_NAME_EXCLUDED_CATS = ["veterinarian", "emergency_pet_hospital", "dental_clinic"]
 ED_HOSPITAL_NAMES = [
-    "Atrium Health University City", "Atrium Health Pineville", "Carolinas Medical Center Mercy",
-    "Novant Health Presbyterian Medical Center", "Novant Health Matthews Medical Center",
+    "Atrium Health University City",
+    "Atrium Health Pineville",
+    "Carolinas Medical Center Mercy",
+    "Novant Health Presbyterian Medical Center",
+    "Novant Health Matthews Medical Center",
     "Novant Health Ballantyne Medical Center",
     # Overture has no point named for these two hospitals, so a building on each campus stands in
     "Novant Huntersville L&D Unit",  # Novant Health Huntersville Medical Center
     "Novant Health Heart & Vascular Institute - Mint Hill",  # Novant Health Mint Hill Medical Center
-    "Atrium Health Union", "Atrium Health Union West", "Atrium Health Cabarrus",
-    "Atrium Health Kannapolis", "Lake Norman Regional Medical Center",
+    "Atrium Health Union",
+    "Atrium Health Union West",
+    "Atrium Health Cabarrus",
+    "Atrium Health Kannapolis",
+    "Lake Norman Regional Medical Center",
 ]
 
 EDUCATION_CATS = ["school", "elementary_school", "middle_school", "high_school", "private_school"]
 HEALTH_CARE_CATS = [
-    "health_care", "doctors_office", "family_practice", "internal_medicine", "pediatric_clinic",
-    "public_health_clinic", "urgent_care_clinic", "outpatient_care_facility", "dental_clinic",
-    "general_dentistry", "pharmacy",
+    "health_care",
+    "doctors_office",
+    "family_practice",
+    "internal_medicine",
+    "pediatric_clinic",
+    "public_health_clinic",
+    "urgent_care_clinic",
+    "outpatient_care_facility",
+    "dental_clinic",
+    "general_dentistry",
+    "pharmacy",
     "hospital",  # emergency departments are relabeled first, so these are hospitals without one
 ]
 EMERGENCY_CATS = {
@@ -95,12 +111,35 @@ EMERGENCY_CATS = {
     "medical": ["emergency_department_verified"],
 }
 ACTIVITY_CATS = [
-    "park", "playground", "dog_park", "hiking_trail", "nature_reserve", "botanical_garden",
-    "golf_course", "gym", "sport_or_fitness_facility", "skate_park", "trampoline_park",
-    "ice_skating_rink", "bowling_alley", "movie_theater", "theatre_venue", "music_venue",
-    "stadium_arena", "amusement_park", "arts_and_entertainment", "museum", "art_museum",
-    "history_museum", "science_museum", "childrens_museum", "zoo", "aquarium", "library",
-    "community_center", "shopping_mall",
+    "park",
+    "playground",
+    "dog_park",
+    "hiking_trail",
+    "nature_reserve",
+    "botanical_garden",
+    "golf_course",
+    "gym",
+    "sport_or_fitness_facility",
+    "skate_park",
+    "trampoline_park",
+    "ice_skating_rink",
+    "bowling_alley",
+    "movie_theater",
+    "theatre_venue",
+    "music_venue",
+    "stadium_arena",
+    "amusement_park",
+    "arts_and_entertainment",
+    "museum",
+    "art_museum",
+    "history_museum",
+    "science_museum",
+    "childrens_museum",
+    "zoo",
+    "aquarium",
+    "library",
+    "community_center",
+    "shopping_mall",
 ]
 
 # School grades, crime rates: the year the January 2023 assessment would have seen.
@@ -117,7 +156,17 @@ SCHOOL_LEVELS = {
 # Words dropped before matching zone names ("J.W. Grier") to report card names
 # ("Joseph W Grier Academy"), along with single-letter initials.
 SCHOOL_NAME_STOPWORDS = {
-    "elementary", "elem", "middle", "high", "school", "academy", "the", "of", "and", "prek", "k",
+    "elementary",
+    "elem",
+    "middle",
+    "high",
+    "school",
+    "academy",
+    "the",
+    "of",
+    "and",
+    "prek",
+    "k",
 }
 CRIME_INDICATORS = {"Violent_Crimes": "violent_crime_rate", "Property_Crimes": "property_crime_rate"}
 
@@ -132,6 +181,7 @@ def add_price_per_sqft(df):
     valid = df["arms_length_sale"] & df["heated_area"].gt(0)
     df.loc[valid, "price_per_sqft"] = df.loc[valid, "sale_price"] / df.loc[valid, "heated_area"]
     return df
+
 
 def nearest_distance(house_lat, house_lon, place_lat, place_lon):
     """Distance (miles) and index of the nearest place for each house."""
@@ -181,6 +231,7 @@ def add_accessibility(df, nc_places_df):
     df["activity_share"] = places_within_miles(df, places, COUNT_RADIUS_MILES, ACTIVITY_CATS) / df["places_count"]
     return df
 
+
 def _name_tokens(name):
     words = re.sub(r"[^a-z ]", " ", name.lower()).split()
     return {w for w in words if len(w) > 1 and w not in SCHOOL_NAME_STOPWORDS}
@@ -193,7 +244,9 @@ def school_scores(zone_names, report_cards, categories):
     Middle" over "Alexander Graham Middle"). Schools that opened after SCHOOL_GRADE_YEAR
     have no grade and get NaN."""
     candidates = report_cards[report_cards["category_code"].isin(categories)]
-    cand_tokens = [(_name_tokens(n), score) for n, score in zip(candidates["name"], candidates["spg_score"])]
+    cand_tokens = [
+        (_name_tokens(n), score) for n, score in zip(candidates["name"], candidates["spg_score"], strict=True)
+    ]
     scores = {}
     for zone_name in set(zone_names.dropna()):
         tokens = _name_tokens(zone_name)
@@ -218,7 +271,9 @@ def add_location_context(df, raw_path):
     distance, all by the house's coordinates. Houses without coordinates get NaN."""
     gis_path = raw_path + "meck_gis/"
     houses = df[["latitude", "longitude"]].dropna()
-    points = gpd.GeoDataFrame(index=houses.index, geometry=gpd.points_from_xy(houses["longitude"], houses["latitude"]), crs=4326)
+    points = gpd.GeoDataFrame(
+        index=houses.index, geometry=gpd.points_from_xy(houses["longitude"], houses["latitude"]), crs=4326
+    )
 
     def join(layer, columns):
         """Columns of the `layer` polygon each house falls in (first one if several overlap)."""
@@ -237,7 +292,11 @@ def add_location_context(df, raw_path):
     qol = pd.read_csv(gis_path + "quality_of_life.csv")
     rates = qol.pivot_table(index="npa", columns="raw_data_name", values="normalized").rename(columns=CRIME_INDICATORS)
     npa = join("NeighborhoodProfileAreas", ["npa"])
-    df = df.join(npa.merge(rates, left_on="npa", right_index=True, how="left")[list(CRIME_INDICATORS.values())].set_axis(df.index))
+    df = df.join(
+        npa.merge(rates, left_on="npa", right_index=True, how="left")[list(CRIME_INDICATORS.values())].set_axis(
+            df.index
+        )
+    )
 
     floodplain = join("FEMAFloodplain", ["objectid"])["objectid"]
     df["in_floodplain"] = floodplain.notna().astype(float).where(df["latitude"].notna())
@@ -284,16 +343,22 @@ def add_price_momentum(df, source=None):
     source = df if source is None else source
     sale_date = pd.to_datetime(source["sale_date"], format="mixed")
     in_window = source["price_per_sqft"].notna() & (sale_date >= MOMENTUM_START) & (sale_date < MOMENTUM_END)
-    sales = pd.DataFrame({
-        "county": source["county"], "neighborhood_code": source["neighborhood_code"], "area": source["area"],
-        "t": (sale_date - MOMENTUM_START).dt.days / 365.25,
-        "log_ppsf": np.log(source["price_per_sqft"]),
-    })[in_window]
+    sales = pd.DataFrame(
+        {
+            "county": source["county"],
+            "neighborhood_code": source["neighborhood_code"],
+            "area": source["area"],
+            "t": (sale_date - MOMENTUM_START).dt.days / 365.25,
+            "log_ppsf": np.log(source["price_per_sqft"]),
+        }
+    )[in_window]
 
     nbhd = _growth_by(sales, ["county", "neighborhood_code"])
     area = _growth_by(sales, ["area"])
     out = df.merge(nbhd, on=["county", "neighborhood_code"], how="left").merge(
-        area[["area", "growth"]].rename(columns={"growth": "area_growth"}), on="area", how="left",
+        area[["area", "growth"]].rename(columns={"growth": "area_growth"}),
+        on="area",
+        how="left",
     )
     out["price_momentum"] = out["growth"].where(out["sales"] >= MIN_MOMENTUM_SALES, out["area_growth"])
     return out.drop(columns=["growth", "sales", "area_growth"])
