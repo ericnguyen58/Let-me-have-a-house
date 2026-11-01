@@ -19,6 +19,7 @@ doesn't turn an assessed value into a market price.
 """
 
 import functools
+
 import joblib
 import numpy as np
 import pandas as pd
@@ -33,7 +34,7 @@ DEFAULT_MODEL_NAME = "hist_gradient_boosting"
 ASSESSMENT_INDEX_MONTH = "2022-12-31"
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def load_artifact(models_path, filename):
     """Cached joblib load - shared with search.py so both modules reuse the same
     in-memory preprocessor/model instead of loading their own copies."""
