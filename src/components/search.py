@@ -1,7 +1,7 @@
 """Retrieval layer: similar-house search and retrospective deal-finding.
 
-Both reuse a feature set's saved preprocessor (output/models/{feature_set}_preprocessor.joblib,
-written by training.py) so retrieval happens in the same feature space the models were
+Both reuse a feature set's saved preprocessor (the production run's
+{feature_set}_preprocessor.joblib, via predict.load_model) so retrieval happens in the same feature space the models were
 trained on, rather than a separate embedding - no vector DB, just NearestNeighbors over
 the existing preprocessed feature matrix. Scope is Mecklenburg only, matching training.py.
 

@@ -1,8 +1,9 @@
 """Predict `total_value` for a single Mecklenburg house using a trained model.
 
-Loads the preprocessor + model artifacts training.py saved to output/models/
-(`{feature_set}_preprocessor.joblib`, `{feature_set}_{model_name}.joblib`) and
-applies them to one property's feature values. The default feature set is
+Loads the production run's preprocessor + model artifacts (output/models/production.json
+names the run, see model_registry.py; `{feature_set}_preprocessor.joblib`,
+`{feature_set}_{model_name}.joblib` in output/models/runs/{run_id}/) and applies them to
+one property's feature values. The default feature set is
 with_neighborhood_price, the one meant for estimates; without_neighborhood_price is
 for studying what `area` and the accessibility features are worth.
 
@@ -24,6 +25,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from src.components import model_registry
 from src.components.training import FEATURE_SETS, MODEL_TYPES
 from src.utils.common import resolve_path
 from src.utils.load_config import load_config
@@ -42,12 +44,12 @@ def load_artifact(models_path, filename):
 
 
 def load_model(feature_set=DEFAULT_FEATURE_SET, model_name=DEFAULT_MODEL_NAME):
-    """(preprocessor, model) for a feature set, from output/models/."""
+    """(preprocessor, model) for a feature set, from the production run."""
     if feature_set not in FEATURE_SETS:
         raise ValueError(f"unknown feature_set {feature_set!r}, expected one of {list(FEATURE_SETS)}")
     if model_name not in MODEL_TYPES:
         raise ValueError(f"model {model_name!r} is not in use, expected one of {MODEL_TYPES}")
-    models_path = resolve_path(load_config(), "models")
+    models_path = model_registry.production_path(resolve_path(load_config(), "models"))
     preprocessor = load_artifact(models_path, f"{feature_set}_preprocessor.joblib")
     model = load_artifact(models_path, f"{feature_set}_{model_name}.joblib")
     return preprocessor, model

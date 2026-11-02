@@ -1,5 +1,5 @@
-"""Train on the synthetic table with training.py's own code, save the artifacts, and load
-them back through predict.py, as the real pipeline does."""
+"""Train on the synthetic table with training.py's own code, save the models as a run, and
+load them back through predict.py, as the real pipeline does."""
 
 import sys
 
@@ -10,16 +10,14 @@ from src.components import predict, training
 
 
 @pytest.fixture(scope="module")
-def training_run(module_features, tmp_path_factory):
-    """Train once for the module: (results, test rows, root directory of the saved models)."""
+def training_run(synthetic_training, tmp_path_factory):
+    """The models saved as a run, once for the module: (results, test rows, root directory)."""
+    cfg, train, test, (results, models, preprocessors, params) = synthetic_training
     root = tmp_path_factory.mktemp("run")
-    cfg = {"test_size": 0.25, "random_state": 0, "search_iter": 2, "cv_folds": 2}
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(training, "test_address_parcels", lambda: [])  # those need the real file
-        features = module_features.drop(columns=training.SALE_DERIVED_FEATURES)
-        train, test = training.split_with_aggregates(features, cfg)
-    results, models, preprocessors, _ = training.train_models(train, test, cfg)
-    training.save_artifacts(str(root / "models"), preprocessors, models)
+    models_path = f"{root}/models/"
+    metrics = training.metrics_table(results)
+    run_id = training.save_run(models_path, train, test, preprocessors, models, metrics, params, cfg)
+    training.check_and_promote(models_path, f"{root}/reports/", run_id, test)  # the first run: promoted
     return results, test, root
 
 

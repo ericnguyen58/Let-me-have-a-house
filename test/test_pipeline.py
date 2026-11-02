@@ -98,4 +98,4 @@ def test_every_real_input_is_made_by_an_earlier_stage_or_placed_by_hand():
     for stage in stages(load_config()):
         for path in stage.inputs:
             assert path in made or path.endswith("merklenburg/Cama_Table_transformed.csv"), (stage.name, path)
-        made.update(stage.outputs)
+        made.update(stage.outputs, stage.may_write)
