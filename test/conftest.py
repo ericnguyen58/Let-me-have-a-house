@@ -25,6 +25,7 @@ def local_data_files():
         models + "production.json",
         models + "out_of_fold_estimates.csv",
         resolve_path(cfg, "raw_data") + "zillow/county_zhvi.csv",
+        resolve_path(cfg, "raw_data") + "merklenburg/Cama_Table_transformed.csv",
     ]
 
 

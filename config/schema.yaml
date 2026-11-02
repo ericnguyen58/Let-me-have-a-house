@@ -1,0 +1,93 @@
+# Checks on the data files (src/utils/data_checks.py). A file that fails stops the stage,
+# listing every problem, instead of passing a changed export on to training. The limits
+# are wide on purpose: they catch a new date format or decimal separator, swapped
+# coordinates, a partial download or a column that went missing, not single odd values,
+# which the cleaning handles. They were set from the files of September 2026 (the county
+# export) and November 2026 (the feature table); change them here when the data changes
+# for a reason.
+#
+# Each listed column must exist. Rules, all optional:
+#   missing: share of rows allowed to be missing (default 0)
+#   numeric: true - the column must have been read as numbers
+#   range: [low, high] - with `outside`, the share of values allowed outside (default 0);
+#          implies numeric
+#   values: [...] - allowed values; `outside` as for range
+#   date: strptime format the values must parse with; `unparsed` is the share allowed not
+#         to, `future` the share allowed after today (both default 0)
+
+# data/raw/merklenburg/Cama_Table_transformed.csv, the county's CAMA export, placed by
+# hand; checked as data_preprocessing reads it (448,175 rows in September 2026)
+county_raw:
+  min_rows: 400000
+  columns:
+    parcelid: {missing: 0.01, numeric: true}
+    ownrlstnme: {missing: 0.01}
+    ownrfrstnme: {missing: 0.4}
+    streetnumber: {missing: 0.1, numeric: true}
+    streetname: {missing: 0.01}
+    # one row of the export is blank throughout, hence missing: 0.001 below
+    loccity:
+      missing: 0.001
+      values: [CHARLOTTE, UNINC, HUNTERSVILLE, CORNELIUS, MINT HILL, MATTHEWS, DAVIDSON, PINEVILLE, STALLINGS]
+    saleprice: {missing: 0.3, numeric: true}
+    # two-digit years: a sale before 1969 reads as 20xx (206 rows in 2031 to 2068, all
+    # but one with no sale price), hence the allowance for future dates
+    saledate: {missing: 0.01, date: "%d/%m/%y %H:%M", unparsed: 0.001, future: 0.002}
+    naldesc: {missing: 0.01}
+    deed_book: {missing: 0.05, numeric: true}
+    deed_page: {missing: 0.05, numeric: true}
+    totlandval: {missing: 0.03, range: [0, 1.0e+9]}
+    totalbldgval: {missing: 0.03, range: [0, 2.0e+9]}
+    totalvalue: {missing: 0.03, range: [0, 2.0e+9]}
+    gisacres: {missing: 0.001, range: [0, 5000]}
+    landuse_description: {missing: 0.06}
+    neighborhood: {missing: 0.03}
+    yearbuilt: {missing: 0.2, range: [1700, 2030]}
+    heatedarea: {missing: 0.03, range: [0, 1.0e+7]}
+    bedrooms: {missing: 0.25, numeric: true}
+    fullbath: {missing: 0.12, numeric: true}
+    halfbath: {missing: 0.15, numeric: true}
+    # latitude and longitude, swapped in this export (see data_preprocessing.meck_to_common):
+    # these ranges are Mecklenburg's, so a fixed export fails here instead of moving every
+    # house out of the county
+    xcoord: {missing: 0.001, range: [34.95, 35.6]}
+    ycoord: {missing: 0.001, range: [-81.1, -80.5]}
+
+# data/features/properties_features.csv; checked before feature_engineering writes it
+# (304,277 rows in November 2026). Every column training uses must be listed (a test
+# checks), so a new feature gets a check.
+features:
+  min_rows: 280000
+  columns:
+    parcel_id: {missing: 0.01, numeric: true}
+    total_value: {missing: 0.01, range: [1000, 1.0e+8]}
+    sale_price: {missing: 0.4, range: [1, 1.0e+8]}
+    sale_date: {missing: 0.01}
+    land_use_class: {values: [single_family, townhouse, condo]}
+    area: {}
+    acreage: {range: [0, 5000]}
+    year_built: {missing: 0.01, range: [1700, 2030]}
+    heated_area: {missing: 0.01, range: [100, 20000]}
+    bedrooms: {missing: 0.05, range: [0, 20]}
+    bathrooms: {missing: 0.1, range: [0, 30]}
+    latitude: {range: [34.95, 35.6]}
+    longitude: {range: [-81.1, -80.5]}
+    property_age: {missing: 0.01, range: [0, 400]}
+    neighborhood_median_price_per_sqft: {missing: 0.02, range: [1, 5000]}
+    neighborhood_sale_count: {missing: 0.02, range: [1, 100000]}
+    price_momentum: {missing: 0.01, range: [-1, 3]}
+    education_nearest_miles: {range: [0, 30]}
+    places_count: {range: [0, 1.0e+6]}
+    health_care_share: {range: [0, 1]}
+    activity_share: {range: [0, 1]}
+    emergency_fire_miles: {range: [0, 30]}
+    emergency_police_miles: {range: [0, 30]}
+    emergency_medical_miles: {range: [0, 30]}
+    elementary_school_score: {missing: 0.1, range: [0, 100]}
+    middle_school_score: {missing: 0.1, range: [0, 100]}
+    high_school_score: {missing: 0.2, range: [0, 100]}
+    # Charlotte only
+    violent_crime_rate: {missing: 0.3, range: [0, 1000]}
+    property_crime_rate: {missing: 0.3, range: [0, 10000]}
+    in_floodplain: {values: [0, 1]}
+    light_rail_miles: {range: [0, 40]}
