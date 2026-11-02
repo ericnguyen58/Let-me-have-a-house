@@ -43,6 +43,7 @@ import pandas as pd
 from sklearn.neighbors import BallTree
 
 from src.utils.common import read_dataframe, resolve_path, save_dataframe
+from src.utils.data_checks import check
 from src.utils.load_config import load_config
 
 CURRENT_YEAR = datetime.now().year
@@ -384,6 +385,7 @@ def run():
     places = read_dataframe(processed_path, "nc_places_map.csv")
 
     features = build_features(clean, places, resolve_path(cfg, "raw_data"))
+    check(features, "features")  # config/schema.yaml; a failure leaves the last file in place
     save_dataframe(features, features_path, "properties_features.csv")
     return features
 
