@@ -29,6 +29,10 @@ Hyperparameters are tuned per feature set per model type via RandomizedSearchCV
 (config/config.yaml `training.search_iter`/`cv_folds`), scored by MAE in dollars
 (dollar_mae): the goal is a smaller typical miss, even at some cost in RMSE or R^2. Each fitted search's
 `best_estimator_` (not the search wrapper itself) is what gets saved.
+
+Each run is saved to its own folder, output/models/runs/{run_id}/ (see model_registry.py),
+and becomes the production model predict.py loads only if check_and_promote finds it no
+worse than the one it would replace.
 """
 
 import json
@@ -51,6 +55,7 @@ from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from src.components import model_registry
 from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
 from src.utils.common import read_dataframe, resolve_path, save_dataframe
 from src.utils.load_config import load_config
@@ -117,11 +122,15 @@ def test_address_parcels():
     return [row["parcel_id"] for address in load_config().get("test_addresses", []) for row in lookup_property(address)]
 
 
-def split_with_aggregates(df, training_cfg):
+def split_rows(df, training_cfg):
     train, test = train_test_split(df, test_size=training_cfg["test_size"], random_state=training_cfg["random_state"])
     # the test addresses always go to the test set, so their estimates are real tests
     moved = train["parcel_id"].isin(test_address_parcels())
-    train, test = train[~moved], pd.concat([test, train[moved]])
+    return train[~moved], pd.concat([test, train[moved]])
+
+
+def split_with_aggregates(df, training_cfg):
+    train, test = split_rows(df, training_cfg)
 
     def add(rows):
         return add_price_momentum(add_neighborhood_aggregates(rows, source=train), source=train)
@@ -272,6 +281,119 @@ def save_artifacts(models_path, preprocessors, models):
         joblib.dump(model, os.path.join(models_path, f"{set_name}_{model_name}.joblib"))
 
 
+# A new run replaces the production model only if none of its models' MAE is more than
+# this much above the production model's, on the houses neither run trained on (a retrain
+# on refreshed data moves it a little either way).
+MAX_MAE_INCREASE = 0.01
+# With fewer houses held out by both runs than this, the comparison is left to a person.
+MIN_SHARED_HOUSES = 1_000
+
+
+def metrics_table(results):
+    metrics_df = pd.DataFrame(results).T
+    metrics_df.index = metrics_df.index.set_names(["feature_set", "model"])
+    return metrics_df.sort_values(["feature_set", SELECTION_METRIC])
+
+
+def save_run(models_path, train, test, preprocessors, models, metrics_df, best_params, training_cfg, **info):
+    """Save a run to output/models/runs/{run_id}/ (model_registry.py) and return its id.
+    `info` goes to model_registry.run_info: `features_file`, and `source` and `base_run`
+    for a run that starts from a copy of another (finetune.py)."""
+    run_id, path = model_registry.new_run(models_path, info.get("base_run"))
+    save_artifacts(path, preprocessors, models)
+    save_dataframe(metrics_df.reset_index(), path, "training_metrics.csv")
+    with open(path + "best_hyperparameters.json", "w") as f:
+        json.dump(best_params, f, indent=2)
+    parcels = model_registry.held_out(train, test)
+    if info.get("base_run") is not None:  # the copied models were trained on the base run's split
+        base = model_registry.held_out_parcels(models_path, info["base_run"])
+        parcels = parcels & base if base is not None else None
+    record = model_registry.run_info(run_id, **info)
+    if record["data"] is not None:
+        record["data"]["rows"] = len(train) + len(test)
+    record.update(
+        train_rows=len(train),
+        test_rows=len(test),
+        held_out_parcels=model_registry.save_held_out(path, parcels),
+        training=training_cfg,
+        feature_sets={
+            fs: list(joblib.load(path + f"{fs}_preprocessor.joblib").feature_names_in_) for fs in FEATURE_SETS
+        },
+        model_types=MODEL_TYPES,
+        metrics={f"{fs}/{m}": row.to_dict() for (fs, m), row in metrics_df.iterrows()},
+    )
+    model_registry.write_info(models_path, run_id, record)
+    return run_id
+
+
+def _predict_with(models_path, run_id, feature_set, model_name, rows):
+    """Predictions in dollars from one run's model, or None when the run doesn't have it.
+    The columns come from the run's own preprocessor, so a run made before a feature was
+    added or removed is fed what it was trained on."""
+    path = model_registry.run_path(models_path, run_id)
+    if not os.path.exists(path + f"{feature_set}_{model_name}.joblib"):
+        return None
+    preprocessor = joblib.load(path + f"{feature_set}_preprocessor.joblib")
+    model = joblib.load(path + f"{feature_set}_{model_name}.joblib")
+    return np.expm1(model.predict(preprocessor.transform(rows[list(preprocessor.feature_names_in_)])))
+
+
+def compare_with_production(models_path, run_id, test):
+    """(promote, reason) for run `run_id`: each of its models against the production
+    run's, both scored on the test houses that both runs held out. Neither model trained
+    on those, so a different split (as after a data refresh) can't favor either one."""
+    production = model_registry.production_run(models_path)
+    if production is None:
+        return True, "the first run: no production model to compare with"
+    held_out = model_registry.held_out_parcels(models_path, production)
+    if held_out is None:
+        return False, f"production ({production}) has no record of its held-out houses: compare by hand"
+    shared = test[test["parcel_id"].isin(held_out & model_registry.held_out_parcels(models_path, run_id))]
+    if len(shared) < MIN_SHARED_HOUSES:
+        return False, (
+            f"only {len(shared):,} test houses are held out by both this run and production ({production}), "
+            f"fewer than {MIN_SHARED_HOUSES:,}: compare by hand"
+        )
+    changes, better = [], True
+    for feature_set in FEATURE_SETS:
+        for model_name in MODEL_TYPES:
+            new = mean_absolute_error(
+                shared[TARGET], _predict_with(models_path, run_id, feature_set, model_name, shared)
+            )
+            try:
+                old = _predict_with(models_path, production, feature_set, model_name, shared)
+            except (KeyError, ValueError) as e:
+                return (
+                    False,
+                    f"production's {feature_set} {model_name} can't score this run's features ({e}): compare by hand",
+                )
+            if old is None:
+                changes.append(f"{feature_set} {model_name}: new, nothing to compare with")
+                continue
+            old = mean_absolute_error(shared[TARGET], old)
+            better &= new <= old * (1 + MAX_MAE_INCREASE)
+            changes.append(f"{feature_set} {model_name} MAE ${new:,.0f} vs ${old:,.0f} ({new / old - 1:+.2%})")
+    verdict = "no" if better else f"an MAE more than {MAX_MAE_INCREASE:.0%}"
+    return better, (
+        f"{verdict} worse than production ({production}) on the {len(shared):,} test houses both held out: "
+        + "; ".join(changes)
+    )
+
+
+def check_and_promote(models_path, reports_path, run_id, test):
+    """Promote run `run_id` if compare_with_production allows it, and record the decision."""
+    promoted, reason = compare_with_production(models_path, run_id, test)
+    if promoted:
+        model_registry.promote(models_path, reports_path, run_id, reason)
+    model_registry.record_check(models_path, run_id, promoted, reason)
+    if promoted:
+        print(f"run {run_id} is now production: {reason}")
+    else:
+        print(f"run {run_id} NOT promoted, production is still {model_registry.production_run(models_path)}: {reason}")
+        print(f"to promote it anyway: uv run python -m src.components.model_registry promote {run_id}")
+    return promoted, reason
+
+
 def run():
     cfg = load_config()
     training_cfg = cfg["training"]
@@ -282,18 +404,23 @@ def run():
     train, test = split_with_aggregates(load_training_data(features_path), training_cfg)
     results, models, preprocessors, best_params = train_models(train, test, training_cfg)
 
-    metrics_df = pd.DataFrame(results).T
-    metrics_df.index = metrics_df.index.set_names(["feature_set", "model"])
-    metrics_df = metrics_df.sort_values(["feature_set", SELECTION_METRIC])
+    metrics_df = metrics_table(results)
     print(metrics_df)
     print()
     print(json.dumps(best_params, indent=2))
 
-    save_artifacts(models_path, preprocessors, models)
-    save_dataframe(metrics_df.reset_index(), reports_path, "training_metrics.csv")
-    os.makedirs(reports_path, exist_ok=True)
-    with open(os.path.join(reports_path, "best_hyperparameters.json"), "w") as f:
-        json.dump(best_params, f, indent=2)
+    run_id = save_run(
+        models_path,
+        train,
+        test,
+        preprocessors,
+        models,
+        metrics_df,
+        best_params,
+        training_cfg,
+        features_file=features_path + "properties_features.csv",
+    )
+    check_and_promote(models_path, reports_path, run_id, test)
     return metrics_df
 
 
