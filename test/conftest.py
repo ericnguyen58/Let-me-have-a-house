@@ -22,8 +22,7 @@ def local_data_files():
     models = resolve_path(cfg, "models")
     return [
         resolve_path(cfg, "features_data") + "properties_features.csv",
-        models + "with_neighborhood_price_preprocessor.joblib",
-        models + "with_neighborhood_price_hist_gradient_boosting.joblib",
+        models + "production.json",
         models + "out_of_fold_estimates.csv",
         resolve_path(cfg, "raw_data") + "zillow/county_zhvi.csv",
     ]
@@ -97,6 +96,19 @@ def features():
 def module_features():
     """make_features() shared by a module's tests, which must not modify it."""
     return make_features()
+
+
+@pytest.fixture(scope="session")
+def synthetic_training():
+    """training.py's split and training on make_features(), done once per test session (it
+    takes some seconds): (training config, train, test, train_models' results)."""
+    from src.components import training
+
+    cfg = {"test_size": 0.25, "random_state": 0, "search_iter": 2, "cv_folds": 2}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(training, "test_address_parcels", lambda: [])  # those need the real file
+        train, test = training.split_with_aggregates(make_features().drop(columns=training.SALE_DERIVED_FEATURES), cfg)
+    return cfg, train, test, training.train_models(train, test, cfg)
 
 
 @pytest.fixture

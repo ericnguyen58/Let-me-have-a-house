@@ -63,6 +63,7 @@ as described below.
 | 4. Training | `src/components/training.py` | Implemented |
 | 5. Evaluation | `src/components/evaluating.py` | 10-house validation, drop-column test (one split) and same house by area implemented. Repeated splits, noise column and baseline model not yet complete. |
 | 5b. Retrain best model | `src/components/finetune.py` | Implemented |
+| Model runs and promotion | `src/components/model_registry.py` | Implemented: every training run is kept with what it was made from; a run replaces the production model only if it is no worse |
 | 6. Prediction | `src/components/predict.py` | Implemented |
 | 7. Search (property lookup, area stats, houses matching a buyer's criteria, similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
 | 8. Assistant (tool use, local Qwen3.5-9B or Claude) | `src/components/assistant.py` | Implemented |
@@ -70,7 +71,7 @@ as described below.
 | Pipeline orchestration | `src/pipeline/run.py` | Implemented: runs the stages in order, skipping those that are up to date |
 | Chat UI v1.0 | `api/main.py`, `api/static/index.html` | Implemented: a web page for the assistant |
 | Docker | `Dockerfile` | Implemented: an image of the chat API |
-| Tests | `test/` | Implemented: 62 tests, 6 of them on the local data |
+| Tests | `test/` | Implemented: 72 tests, 6 of them on the local data |
 | CI/CD | `.github/workflows/ci.yml` | Implemented: lint, format check and tests on every push and pull request; the Docker image is pushed to GitHub's registry from `main` |
 
 ## Current models
@@ -86,17 +87,23 @@ setups are kept in `training.py` and can be switched back on (XGBoost is an
 optional dependency: `uv sync --group xgboost`).
 
 Both models come from the latest full training run (November 1, 2026, about
-20 minutes). It uses all 27 features, including the school, crime, flood and
+20 minutes), now the production run `2026-11-01_155733` in
+`output/models/runs/` (see `model_registry.py`). It uses all 27 features, including the school, crime, flood and
 light rail features, and the about 9,200 golf, waterfront and high-rise homes
 that were added back (see `data_preprocessing.py`). Market sales are the ones
 the county marked "Qualified".
 
-| File in `output/models/` | Test set (about 61,000 houses) |
+| Model | Test set (about 61,000 houses) |
 |---|---|
 | `with_neighborhood_price_hist_gradient_boosting` (default) | RMSE $80,283, MAE $29,439, R squared 0.956, average error 5.04% |
 | `without_neighborhood_price_hist_gradient_boosting` | RMSE $83,464, MAE $29,969, R squared 0.953, average error 5.12% |
-| `*_random_forest` | Previous models, not used, scored on the earlier test split (see below). RMSE $86,183, MAE $32,826, R squared 0.950, average error 5.71% (default feature set); $88,283, $34,435, 0.948, 6.00% (without neighborhood price). Their metrics and settings are kept in `reports/random_forest_run/`. |
-| `*_xgboost` | Not used, and no longer fit the current preprocessors. |
+| `*_random_forest` (in `output/models/`, from before runs were kept) | Previous models, not used, scored on the earlier test split (see below). RMSE $86,183, MAE $32,826, R squared 0.950, average error 5.71% (default feature set); $88,283, $34,435, 0.948, 6.00% (without neighborhood price). Their metrics and settings are kept in `reports/random_forest_run/`. |
+| `*_xgboost` (in `output/models/`) | Not used, and no longer fit the current preprocessors. |
+
+The `.joblib` files directly in `output/models/` are no longer read: the
+gradient boosting ones were copied into the production run when runs started
+being kept, and the random forest and XGBoost ones are from earlier runs.
+They can be deleted (about 2.2 GB).
 
 This run removed 6 houses with impossible bedroom counts (see
 `data_preprocessing.py`), which redrew the random 80/20 split, so the test set
@@ -161,12 +168,13 @@ feature_engineering.py
         |
         v
 training.py
-  2 feature sets x gradient boosting -> output/models/*.joblib
-  metrics                           -> reports/training_metrics.csv,
-                                       reports/best_hyperparameters.json
+  2 feature sets x gradient boosting -> output/models/runs/<run_id>/ (models, metrics, run.json)
+  check against production           -> if no worse: output/models/production.json,
+                                        reports/training_metrics.csv,
+                                        reports/best_hyperparameters.json
         |
         v
-predict.py, search.py,              (load the saved models and feature table)
+predict.py, search.py,              (load the production run's models and the feature table)
 market_estimate.py
         |
         v
@@ -654,15 +662,66 @@ sales. Their neighborhood price is filled with the median.
 - `train_models`: for each feature set, fits the preprocessor on the training
   rows, trains on `log(1 + total_value)`, converts predictions back to
   dollars, and records RMSE, MAE, R squared and MAPE on the test set.
-- `run()` saves:
-  - `output/models/<feature_set>_preprocessor.joblib`
-  - `output/models/<feature_set>_<model>.joblib`
-  - `reports/training_metrics.csv`
-  - `reports/best_hyperparameters.json`
+- `run()` saves the run to its own folder, `output/models/runs/<run_id>/`
+  (`save_run`, see `model_registry.py` below):
+  - `<feature_set>_preprocessor.joblib`, `<feature_set>_<model>.joblib`
+  - `training_metrics.csv`, `best_hyperparameters.json`
+  - `held_out_parcels.csv` and `run.json`
+
+  Then `check_and_promote` decides whether the run replaces the production
+  model, and if it does, copies its two reports to `reports/`.
 
 Models trained before `price_momentum` was added still load, but they ignore
 the column. Retrain to use it. Each gradient boosting file is 45 to 70 MB;
 the old random forest files are about 1.1 GB each.
+
+### `model_registry.py`
+
+Keeps every training run and names the production one. Before, each training
+run overwrote the models in `output/models/`, so a worse run replaced a better
+one without notice, and going back meant a manual backup.
+
+- **Runs.** Each run of `training.py` or `finetune.py` gets its own folder,
+  `output/models/runs/<run_id>/` (the run's start time, like
+  `2026-11-01_155733`), which is never overwritten. Besides the models and the
+  two reports, it holds `held_out_parcels.csv`, the parcels with no row in the
+  run's training split, and `run.json`: the git commit (and whether there were
+  uncommitted changes), the feature file's sha256 and row count, the training
+  settings, each model's feature list, the package versions, the test metrics,
+  and the promotion decision with its reason.
+- **Production.** `output/models/production.json` names the production run.
+  `predict.load_model` reads it, so `search.py`, the assistant and the API use
+  that run's models. Promoting a run rewrites this file and copies the run's
+  `training_metrics.csv` and `best_hyperparameters.json` to `reports/`, where
+  `finetune.py`, `evaluating.py` and the calibrate stage read them. A process
+  that has already loaded a model keeps it, so restart the API after a
+  promotion.
+- **The check** (`training.check_and_promote`). A new run is promoted only if
+  no model's MAE is more than 1% (`MAX_MAE_INCREASE`) above the production
+  model's. Both are scored on the test houses that both runs held out, so
+  neither model trained on them and a different split can't favor either one
+  (after the bedroom rule removed 6 houses, the split changed, and the test
+  RMSE rose from $76,440 to $80,283 largely because the new test set held a
+  few much larger misses). Retraining on unchanged data
+  shares the whole test set, about 60,000 houses; after a data change, the
+  random splits share about a fifth of it. With fewer than 1,000 shared houses
+  (`MIN_SHARED_HOUSES`), or if production's model can't score the new features
+  (a feature was removed), the run is kept but not promoted, and the decision
+  is left to a person.
+- **Commands.**
+
+  ```bash
+  uv run python -m src.components.model_registry                 # list runs; production is marked
+  uv run python -m src.components.model_registry promote RUN_ID  # promote by hand, without the check
+  uv run python -m src.components.model_registry rollback        # back to the run production replaced
+  uv run python -m src.components.model_registry adopt           # one time: record output/models/*.joblib as a run
+  ```
+
+  `adopt` recorded the models trained on November 1, 2026 as the first run.
+  The feature file hadn't changed since, so their held-out parcels were
+  recomputed from it: the models' MAE on the recomputed test set matches the
+  training report to the cent.
+- Runs are not deleted automatically. Each takes about 130 MB.
 
 ### `evaluating.py`
 
@@ -773,19 +832,16 @@ validates it. Use it after adding a feature, instead of a full training run.
     new one side by side. If that file does not exist, 10 random test houses
     are used. If it was written for a different model type, the same houses
     are used without the last run's columns.
-- **Output.** Nothing from the last run is overwritten:
-  - `output/models/finetuned/<feature_set>_preprocessor.joblib` and
-    `<feature_set>_<model>.joblib`
-  - `reports/finetuned_metrics.csv`
-  - `reports/finetuned_validation_houses.csv`
-- **Using the result.** `predict.py` loads the models in `output/models/`.
-  To switch it to the retrained model, move its two files from
-  `output/models/finetuned/` up into `output/models/`. This replaces the
-  feature set's shared preprocessor, so any other model type trained on that
-  feature set stops fitting it.
-- **Comparing again.** The "last run" numbers always come from the last full
-  training run's files, so running `finetune.py` twice compares against the
-  same baseline.
+- **Output.** A new run (see `model_registry.py`) that starts as a copy of
+  the production run, with the retrained model and its preprocessor replaced.
+  It goes through the same check as a training run and becomes production
+  only if it is no worse. Its held-out parcels are those held out by both its
+  own split and the production run's, since the copied models were trained on
+  the production run's split. The comparison also goes to
+  `reports/finetuned_metrics.csv` and `reports/finetuned_validation_houses.csv`.
+- **Comparing again.** The "last run" numbers come from `reports/`, which
+  holds the production run's files. Running `finetune.py` twice compares
+  against the same baseline unless the first run was promoted.
 - **Limitation.** The settings were chosen before the new features existed,
   so they may no longer be the best ones. A full training run tunes them
   again.
@@ -1422,16 +1478,20 @@ output, the way make decides, and is skipped then:
 | `ingest` | `data_ingestor().ingest()` | nothing | Overture places, GIS layers, quality of life, school report cards, Zillow index |
 | `preprocess` | `data_preprocessing.run` | the Mecklenburg CSV, Overture places | `properties_clean.csv`, `nc_places_map.csv` |
 | `features` | `feature_engineering.run` | both of those, GIS layers, report cards | `properties_features.csv` |
-| `train` | `training.run` | the feature table | the models, `training_metrics.csv`, `best_hyperparameters.json` |
-| `calibrate` | `market_estimate.build_out_of_fold_estimates` | the feature table, the training reports | `out_of_fold_estimates.csv` |
-| `validate` | `evaluating.run` | the feature table, the models | `validation_houses.csv` |
-| `check_houses` | `market_estimate.run_houses` | the feature table, the models, the out-of-fold estimates, the Zillow index | `market_test_houses.csv` |
+| `train` | `training.run` | the feature table | a run in `output/models/runs/` and `last_run.json`; `production.json` and the training reports if the run is promoted |
+| `calibrate` | `market_estimate.build_out_of_fold_estimates` | the feature table, `production.json` | `out_of_fold_estimates.csv` |
+| `validate` | `evaluating.run` | the feature table, `production.json` | `validation_houses.csv` |
+| `check_houses` | `market_estimate.run_houses` | the feature table, `production.json`, the out-of-fold estimates, the Zillow index | `market_test_houses.csv` |
 
 - Only data files count as inputs, not code. After changing a stage's code,
   rerun from that stage: `--from features` reruns `features` even if it is up
   to date, and the stages after it then see a newer input.
 - `--dry-run` shows each stage's decision and reason, following what the
   stages before it would rewrite.
+- `train` is judged by `last_run.json`, written by every run, so a run that
+  isn't promoted doesn't make `train` rerun next time. The stages after it read
+  `production.json`, so they rerun only when a run is promoted. A dry run
+  can't know that in advance, and lists them as "may rewrite".
 - A missing input stops the run before the stage, naming the stage that makes
   it. The Mecklenburg CSV (`data/raw/merklenburg/Cama_Table_transformed.csv`)
   is placed by hand, so no stage makes it.
@@ -1460,8 +1520,13 @@ data nor the trained models:
 - `test_search.py`: address and parcel lookup, a house's own sale left out of
   its neighborhood price, area stats.
 - `test_training_predict.py`: trains both feature sets with `training.py`'s
-  own code on the synthetic table, saves the artifacts and loads them back
-  through `predict.py`.
+  own code on the synthetic table (once per session, `synthetic_training`),
+  saves them as a run and loads them back through `predict.py`.
+- `test_model_registry.py`: the first run is promoted; a worse run is kept
+  but not promoted and leaves `reports/` alone; an equally good run is
+  promoted and rollback returns; too few shared held-out houses leave the
+  decision to a person; what `run.json` records; a run based on another;
+  `adopt`.
 - `test_assistant.py`: `quick_reply`, history trimming, an unknown tool, the
   tool schemas.
 - `test_api.py`: the page, `/api/chat`, the 503 for a missing Ollama server,
@@ -1551,6 +1616,9 @@ copied into the image). The health check requests `/`. The image is about
 - Other implausible values may still pass the cleaning, which only bounds
   heated area and bedrooms; `price_trends.ipynb` caps its standardized
   features at 5 standard deviations for that reason.
+- The promotion check compares test MAE only. It doesn't look at RMSE, the
+  10-house validation or the market estimate paths, which run after `train`
+  (`validate`, `check_houses`) and only report.
 - `config/schema.yaml` is empty.
 
 ## Repository layout
@@ -1567,7 +1635,7 @@ data/features/    feature table used for training and search
 notebooks/        exploration notebooks; shap_explain.ipynb explains the model stage by stage,
                   area_effect.ipynb compares the same house across areas, price_trends.ipynb
                   shows how prices spread (PCA, UMAP, PLS, map, sales since 2016)
-output/models/    trained preprocessors and models (finetuned/ holds retrained ones)
+output/models/    runs/<run_id>/: each training run; production.json names the one in use
 reports/          training metrics, chosen hyperparameters, house validation, drop-column
                   and same-house-by-area results
 report.md         the research write-up: SHAP, drop-column test, same house by area

@@ -11,6 +11,9 @@ its oldest output, the way make decides. Only data files count as inputs, not co
 changing a stage's code, rerun from that stage with --from. Each stage still runs on its
 own with `python -m src.components.<module>`, as before.
 
+train saves a new run every time, but the stages after it rerun only when that run is
+promoted to production (see src/components/model_registry.py).
+
 The Mecklenburg CSV (data/raw/merklenburg/Cama_Table_transformed.csv) is placed by hand,
 so no stage makes it; a missing one stops the run before preprocess.
 """
@@ -20,7 +23,7 @@ import importlib
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.utils.common import resolve_path
 from src.utils.load_config import load_config
@@ -32,6 +35,9 @@ class Stage:
     run: Callable[[], object]
     inputs: list[str]
     outputs: list[str]
+    # written only some runs (production.json, when train's run is promoted), so not used
+    # to judge whether the stage is up to date
+    may_write: list[str] = field(default_factory=list)
 
 
 def _call(module, function="run"):
@@ -48,7 +54,7 @@ def _ingest():
 def stages(cfg):
     """The pipeline's stages in run order, with the files each reads and writes."""
     from src.components.market_estimate import OOF_FILE
-    from src.components.training import FEATURE_SETS, MODEL_TYPES
+    from src.components.model_registry import LAST_RUN_FILE, PRODUCTION_FILE
 
     raw, processed, features, models, reports = (
         resolve_path(cfg, key) for key in ["raw_data", "processed_data", "features_data", "models", "reports"]
@@ -62,10 +68,9 @@ def stages(cfg):
     ]
     clean, places_map = processed + "properties_clean.csv", processed + "nc_places_map.csv"
     feature_table = features + "properties_features.csv"
-    model_files = [models + f"{fs}_preprocessor.joblib" for fs in FEATURE_SETS] + [
-        models + f"{fs}_{name}.joblib" for fs in FEATURE_SETS for name in MODEL_TYPES
-    ]
-    training_reports = [reports + "training_metrics.csv", reports + "best_hyperparameters.json"]
+    # train records every run in last_run.json; production.json (and with it reports/
+    # training_metrics.csv and best_hyperparameters.json) changes only when a run is promoted
+    production = models + PRODUCTION_FILE
     out_of_fold = models + OOF_FILE
     return [
         Stage("ingest", _ingest, [], [places, *location, zillow]),
@@ -76,18 +81,18 @@ def stages(cfg):
             [clean, places_map],
         ),
         Stage("features", _call("feature_engineering"), [clean, places_map, *location], [feature_table]),
-        Stage("train", _call("training"), [feature_table], model_files + training_reports),
+        Stage("train", _call("training"), [feature_table], [models + LAST_RUN_FILE], may_write=[production]),
         Stage(
             "calibrate",
             _call("market_estimate", "build_out_of_fold_estimates"),
-            [feature_table, *training_reports],
+            [feature_table, production],
             [out_of_fold],
         ),
-        Stage("validate", _call("evaluating"), [feature_table, *model_files], [reports + "validation_houses.csv"]),
+        Stage("validate", _call("evaluating"), [feature_table, production], [reports + "validation_houses.csv"]),
         Stage(
             "check_houses",
             _call("market_estimate", "run_houses"),
-            [feature_table, *model_files, out_of_fold, zillow],
+            [feature_table, production, out_of_fold, zillow],
             [reports + "market_test_houses.csv"],
         ),
     ]
@@ -130,8 +135,8 @@ def run_pipeline(all_stages, start=None, end=None, force=False, dry_run=False, l
     A stage whose input is missing stops the run, naming the stage that makes it (or
     saying it is placed by hand)."""
     selected = select(all_stages, start, end)
-    makers = {path: s.name for s in all_stages for path in s.outputs}
-    will_change = set()  # outputs of stages that run before this one (dry run only)
+    makers = {path: s.name for s in all_stages for path in [*s.outputs, *s.may_write]}
+    will_change = {}  # path -> "rewrites" or "may rewrite", by stages that run before this one (dry run only)
     plan = []
     for stage in selected:
         if force or stage.name == start:
@@ -140,7 +145,7 @@ def run_pipeline(all_stages, start=None, end=None, force=False, dry_run=False, l
             reason = staleness(stage)
             if dry_run and reason is None:
                 upstream = next((p for p in stage.inputs if p in will_change), None)
-                reason = upstream and f"{makers[upstream]} runs first and rewrites {_short(upstream)}"
+                reason = upstream and f"{makers[upstream]} runs first and {will_change[upstream]} {_short(upstream)}"
         if reason is None:
             plan.append((stage.name, "skip", "up to date"))
             log(f"[skip] {stage.name}: up to date")
@@ -155,7 +160,7 @@ def run_pipeline(all_stages, start=None, end=None, force=False, dry_run=False, l
         plan.append((stage.name, "run", reason))
         log(f"[run]  {stage.name}: {reason}")
         if dry_run:
-            will_change.update(stage.outputs)
+            will_change |= dict.fromkeys(stage.outputs, "rewrites") | dict.fromkeys(stage.may_write, "may rewrite")
             continue
         started = time.monotonic()
         stage.run()

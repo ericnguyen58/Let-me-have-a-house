@@ -14,9 +14,11 @@ Validation, both against the last run:
 - the same houses as the last 10-house check (reports/validation_houses.csv, or 10
   random test houses if that file doesn't exist)
 
-Artifacts go to output/models/finetuned/ and reports/finetuned_*.csv, so the last run's
-models and reports are left as they were. To make predict.py use the retrained model,
-move its two files from output/models/finetuned/ up into output/models/.
+The retrained model is saved as a new run (output/models/runs/{run_id}/, see
+model_registry.py) that starts as a copy of the production run, with this one model and
+its preprocessor replaced. Like a training run, it becomes production only if
+training.check_and_promote finds it no worse. The comparison also goes to
+reports/finetuned_*.csv.
 """
 
 import json
@@ -26,6 +28,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import clone
 
+from src.components import model_registry
 from src.components.evaluating import (
     DISPLAY_COLUMNS,
     add_estimates,
@@ -40,14 +43,14 @@ from src.components.training import (
     TARGET,
     build_preprocessor,
     build_search_estimators,
+    check_and_promote,
     eval_metrics,
-    save_artifacts,
+    save_run,
 )
 from src.utils.common import resolve_path, save_dataframe
 from src.utils.load_config import load_config
 
 METRICS = ["rmse", "mae", "r2", "mape"]
-FINETUNED_DIR = "finetuned/"
 
 
 def best_previous_model(reports_path):
@@ -96,7 +99,10 @@ def validation_houses(test, reports_path, name):
 def run():
     cfg = load_config()
     training_cfg = cfg["training"]
-    reports_path = resolve_path(cfg, "reports")
+    models_path, reports_path = resolve_path(cfg, "models"), resolve_path(cfg, "reports")
+    production = model_registry.production_run(models_path)
+    if production is None:
+        raise SystemExit("no production run to start from: run training.py first")
 
     previous, params = best_previous_model(reports_path)
     feature_set, model_name = previous["feature_set"], previous["model"]
@@ -123,9 +129,26 @@ def run():
     add_estimates(results, houses, "finetuned", preprocessor, model, features)
     print_validation(results)
 
-    save_artifacts(
-        resolve_path(cfg, "models") + FINETUNED_DIR, {feature_set: preprocessor}, {(feature_set, model_name): model}
+    # production's metrics and settings, with this model's replaced
+    run_metrics = pd.read_csv(os.path.join(reports_path, "training_metrics.csv")).set_index(["feature_set", "model"])
+    run_metrics.loc[(feature_set, model_name), METRICS] = metrics["finetuned"]
+    with open(os.path.join(reports_path, "best_hyperparameters.json")) as f:
+        best_params = json.load(f) | {f"{feature_set}__{model_name}": params}
+    run_id = save_run(
+        models_path,
+        train,
+        test,
+        {feature_set: preprocessor},
+        {(feature_set, model_name): model},
+        run_metrics[METRICS],
+        best_params,
+        training_cfg,
+        features_file=resolve_path(cfg, "features_data") + "properties_features.csv",
+        source="finetune",
+        base_run=production,
     )
+    check_and_promote(models_path, reports_path, run_id, test)
+
     save_dataframe(metrics.rename_axis("metric").reset_index(), reports_path, "finetuned_metrics.csv")
     save_dataframe(results, reports_path, "finetuned_validation_houses.csv")
     return metrics, results
