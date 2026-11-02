@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import requests
 
 from src.components import assistant
 
@@ -74,3 +75,36 @@ def test_tool_schemas_carry_the_shared_feature_docs():
     assert set(schemas) == {t.name for t in assistant.TOOLS}
     assert "heated_area" in schemas["predict_total_value"]["parameters"]["properties"]
     assert "{feature_args}" not in schemas["find_similar_houses"]["description"]
+
+
+def test_a_lookup_with_no_match_says_what_to_do(search_on, features):
+    search_on(features)
+    result = json.loads(assistant.lookup_property.call({"address": "99999 Nowhere Rd"}))
+    assert result == {"matches": [], "note": assistant.NO_MATCH_NOTE}
+
+
+class FakeResponse:
+    def __init__(self, status):
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Server Error")
+
+    def json(self):
+        return {"message": {"role": "assistant", "content": "ok"}}
+
+
+def test_an_ollama_500_is_tried_again_once(monkeypatch):
+    statuses = [500, 200]
+    monkeypatch.setattr(assistant.requests, "post", lambda *a, **k: FakeResponse(statuses.pop(0)))
+    assert assistant._ollama_chat([])["content"] == "ok"
+    statuses[:] = [500, 500, 200]
+    with pytest.raises(requests.HTTPError):
+        assistant._ollama_chat([])
+    assert statuses == [200]  # two requests, not three
+
+
+def test_an_address_passed_as_a_parcel_id_gets_an_error_saying_what_to_do():
+    result = json.loads(assistant.estimate_market_value.call({"parcel_id": "4817 Kelly Woods Ln"}))
+    assert "call lookup_property" in result["error"]

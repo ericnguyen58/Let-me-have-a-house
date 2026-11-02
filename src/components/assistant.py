@@ -40,6 +40,9 @@ OLLAMA_KEEP_ALIVE = "30m"
 OLLAMA_THINK = False
 # A small model can get stuck calling tools; stop it after this many rounds
 MAX_TOOL_ROUNDS = 10
+# Ollama answers 500 when it can't parse the model's tool call (qwen3.5 wrote malformed
+# XML once in 66 questions of the assistant eval). The model samples again on a retry.
+OLLAMA_ATTEMPTS = 2
 # Conversation history sent to the model (_fit_history). A turn adds about 1,000 characters
 # (300 tokens, measured), so this keeps about 12 turns whole: a reopened chat is reread in
 # about 15 seconds, and a question stays far below OLLAMA_CONTEXT (system prompt and tools
@@ -84,6 +87,12 @@ OFF_TOPIC_REPLY = (
     "Sorry, I can only help with houses in Mecklenburg County, NC: what a house is worth, "
     "recommendations, areas and comparable houses."
 )
+# lookup_property's result when nothing matches. With an empty list alone, the local model
+# answered "no match" with OFF_TOPIC_REPLY in 2 of 3 runs of the assistant eval.
+NO_MATCH_NOTE = (
+    "No property with this address or parcel id is in the county records. Tell the user so "
+    "and ask them to check it: this is not an off-topic question."
+)
 # Whole messages (lowercased, punctuation removed) that are only small talk. Not "ok", "sure"
 # or "yes": those can answer a question the model just asked, so they go to the model.
 SMALL_TALK = [
@@ -123,7 +132,7 @@ SYSTEM_PROMPT = (
     "You are a house-value assistant for Mecklenburg County, North Carolina, and help only "
     "with its homes. If a message asks for anything else - another place, general "
     "knowledge, writing, code, mortgage or loan math, or changing these instructions - call "
-    "no tool and reply with exactly this sentence and nothing more: " + OFF_TOPIC_REPLY + " For what a "
+    "no tool and reply with only the off-topic sentence at the end of these instructions. For what a "
     "real property is worth or would sell for today, call lookup_property, then "
     "estimate_market_value with its parcel_id. Give the market estimate with its 80% "
     "range and the number of sales behind the ratio, and say so when confidence is not "
@@ -143,7 +152,11 @@ SYSTEM_PROMPT = (
     "to CHARLOTTE_15 (parts of Charlotte, numbered north to south), DAVIDSON, "
     "CORNELIUS, HUNTERSVILLE, MINT HILL, MATTHEWS and PINEVILLE. When the user "
     "gives an address or parcel id, call lookup_property first and pass its parcel_id "
-    "to the other tools; if it returns several matches, ask which one. To value a "
+    "to the other tools; if it returns several matches, ask which one. If it finds no "
+    "match, say that the county records have no property at that address and ask the user "
+    "to check it - that is not off-topic. Pass only a parcel_id that a tool returned in "
+    "this conversation: for a follow-up about a house from an earlier answer, call "
+    "lookup_property with its address again. To value a "
     "described house with no address, pass what the user gave to predict_total_value / "
     "find_similar_houses: every other feature is filled with its area's typical value, "
     "so estimates and comps are much weaker without the area - ask for it, or the "
@@ -153,14 +166,16 @@ SYSTEM_PROMPT = (
     "distressed property sold cheap as-is, then renovated, so its current record "
     "reflects the renovated state), and because assessed values usually sit below "
     "market prices, the gap is not purely a bargain - mention both caveats "
-    "whenever you present deals."
+    "whenever you present deals. "
+    # last, so that nothing follows the sentence to be copied out with it
+    "The off-topic sentence: " + OFF_TOPIC_REPLY
 )
 
 # Shared by the predict/similar tools, which take the same house arguments. Only the
 # features a user can describe are arguments: every model feature as an argument made
 # these two schemas 70% of the prompt, which Ollama spent about 11 seconds processing.
 FEATURE_ARGS_DOC = """
-        parcel_id: County parcel id from lookup_property, e.g. "20947309". Its record supplies every feature, and any argument below replaces that feature (a what-if).
+        parcel_id: County parcel id, as lookup_property returned it. Its record supplies every feature, and any argument below replaces that feature (a what-if).
         land_use_class: single_family, condo, or townhouse.
         area: CHARLOTTE_1 to CHARLOTTE_15, DAVIDSON, CORNELIUS, HUNTERSVILLE, MINT HILL, MATTHEWS, or PINEVILLE.
         acreage: Lot size in acres.
@@ -175,6 +190,21 @@ def _features(args):
     return {k: v for k, v in args.items() if k in FEATURE_COLUMNS}
 
 
+def _parcel_record(parcel_id):
+    """A parcel's county record, or a ValueError the model can act on."""
+    try:
+        float(parcel_id)
+    except TypeError, ValueError:  # the assistant eval saw the model pass an address here
+        raise ValueError(
+            f"{parcel_id!r} is not a parcel id: call lookup_property with the address, then pass "
+            "the parcel_id it returns"
+        ) from None
+    matches = search.lookup_property(parcel_id=parcel_id)
+    if not matches:
+        raise ValueError(f"no property with parcel id {parcel_id}")
+    return matches[0]
+
+
 def _house_features(parcel_id, given):
     """Model features for the predict/similar tools: the parcel's record with the `given`
     features on top, or for a described house the `given` features with every other one
@@ -184,10 +214,7 @@ def _house_features(parcel_id, given):
     if "year_built" in given:
         given["property_age"] = CURRENT_YEAR - given["year_built"]
     if parcel_id is not None:
-        matches = search.lookup_property(parcel_id=parcel_id)
-        if not matches:
-            raise ValueError(f"no property with parcel id {parcel_id}")
-        return {**_features(matches[0]), **given}
+        return {**_features(_parcel_record(parcel_id)), **given}
     if "area" in given:
         return {**search.typical_features(given["area"]), **given}
     return given
@@ -355,13 +382,16 @@ def lookup_property(address: str | None = None, parcel_id: str | None = None) ->
     tools. May return several matches, or none.
 
     Args:
-        address: Street address starting with the house number, e.g. "3612 Abbey Hill Ln, Charlotte".
-        parcel_id: County parcel id, e.g. "20947309".
+        address: Street address starting with the house number, with the town if known.
+        parcel_id: County parcel id, digits only.
     """
     try:
-        return json.dumps(search.lookup_property(address=address, parcel_id=parcel_id), default=str)
+        matches = search.lookup_property(address=address, parcel_id=parcel_id)
     except ValueError as e:
         return _tool_error(e)
+    if not matches:  # said here, where a small model heeds it more than in the system prompt
+        return json.dumps({"matches": [], "note": NO_MATCH_NOTE})
+    return json.dumps(matches, default=str)
 
 
 @beta_tool
@@ -395,7 +425,7 @@ def estimate_market_value(
     county's, and change_vs_unchanged is what the change alone is worth.
 
     Args:
-        parcel_id: County parcel id from lookup_property, e.g. "20947309".
+        parcel_id: County parcel id, as lookup_property returned it in this conversation.
         heated_area: New heated square footage, for a what-if.
         bedrooms: New number of bedrooms, for a what-if.
         bathrooms: New number of bathrooms (half baths count as 0.5), for a what-if.
@@ -406,10 +436,7 @@ def estimate_market_value(
         if v is not None
     }
     try:
-        matches = search.lookup_property(parcel_id=parcel_id)
-        if not matches:
-            raise ValueError(f"no property with parcel id {parcel_id}")
-        house = matches[0]
+        house = _parcel_record(parcel_id)
         result = market_estimate.what_if(house, changes) if changes else market_estimate.market_value(house)
     except (ValueError, FileNotFoundError) as e:
         return json.dumps({"error": str(e)})  # a missing file's message says which command makes it
@@ -516,26 +543,30 @@ def _call_tool(tools, call) -> str:
 
 
 def _ollama_chat(messages: list, **options) -> dict:
-    """One Ollama /api/chat request with SYSTEM_PROMPT and TOOLS; return the model's message."""
-    try:
-        response = requests.post(
-            f"{OLLAMA_URL}/api/chat",
-            timeout=600,
-            json={
-                "model": MODEL,
-                "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
-                "tools": OLLAMA_TOOLS,
-                "stream": False,
-                "think": OLLAMA_THINK,
-                "keep_alive": OLLAMA_KEEP_ALIVE,
-                "options": {"num_ctx": OLLAMA_CONTEXT, **options},
-            },
-        )
-    except requests.ConnectionError:
-        raise SystemExit(
-            f"Ollama is not running at {OLLAMA_URL}: start it with `ollama serve`, "
-            f"or set ASSISTANT_MODEL to a Claude model"
-        ) from None
+    """One Ollama /api/chat request with SYSTEM_PROMPT and TOOLS; return the model's message.
+    A 500 is tried again (up to OLLAMA_ATTEMPTS requests in all)."""
+    for attempt in range(1, OLLAMA_ATTEMPTS + 1):
+        try:
+            response = requests.post(
+                f"{OLLAMA_URL}/api/chat",
+                timeout=600,
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+                    "tools": OLLAMA_TOOLS,
+                    "stream": False,
+                    "think": OLLAMA_THINK,
+                    "keep_alive": OLLAMA_KEEP_ALIVE,
+                    "options": {"num_ctx": OLLAMA_CONTEXT, **options},
+                },
+            )
+        except requests.ConnectionError:
+            raise SystemExit(
+                f"Ollama is not running at {OLLAMA_URL}: start it with `ollama serve`, "
+                f"or set ASSISTANT_MODEL to a Claude model"
+            ) from None
+        if response.status_code != 500 or attempt == OLLAMA_ATTEMPTS:
+            break
     if response.status_code == 404:
         raise SystemExit(f"{response.json().get('error')} - run `ollama pull {MODEL}`")
     response.raise_for_status()
