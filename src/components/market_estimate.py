@@ -136,7 +136,9 @@ def range_factors(sales, as_of, base="total_value"):
         & sales["neighborhood_code"].isin(ratios.index)
         & (sales["year_built"] < ASSESSMENT_YEAR)
     ]  # houses that get an estimate
-    misses = later["sale_price"] / (later[base] * later["neighborhood_code"].map(ratios["median"]))
+    # astype: with no such houses, pandas 3.1 maps the empty codes to an empty str column
+    ratio = later["neighborhood_code"].map(ratios["median"]).astype(float)
+    misses = later["sale_price"] / (later[base] * ratio)
     return tuple(misses.quantile(list(RANGE_QUANTILES)))
 
 
