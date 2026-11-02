@@ -56,6 +56,7 @@ as described below.
 | Stage | File | Status |
 |---|---|---|
 | Config loading | `src/utils/load_config.py` | Implemented |
+| Data checks | `src/utils/data_checks.py`, `config/schema.yaml` | Implemented: the county export and the feature table are checked before use |
 | Shared helpers | `src/utils/common.py` | Implemented |
 | 1. Ingest raw data | `src/components/data_ingestor.py` | Implemented |
 | 2. Clean and assign areas | `src/components/data_preprocessing.py` | Implemented |
@@ -71,7 +72,7 @@ as described below.
 | Pipeline orchestration | `src/pipeline/run.py` | Implemented: runs the stages in order, skipping those that are up to date |
 | Chat UI v1.0 | `api/main.py`, `api/static/index.html` | Implemented: a web page for the assistant |
 | Docker | `Dockerfile` | Implemented: an image of the chat API |
-| Tests | `test/` | Implemented: 72 tests, 6 of them on the local data |
+| Tests | `test/` | Implemented: 80 tests, 7 of them on the local data |
 | CI/CD | `.github/workflows/ci.yml` | Implemented: lint, format check and tests on every push and pull request; the Docker image is pushed to GitHub's registry from `main` |
 
 ## Current models
@@ -286,6 +287,8 @@ All paths and settings live in `config/config.yaml`:
 - `training`: target column, test split size, random seed, and the number of
   hyperparameter search iterations and cross-validation folds.
 
+`config/schema.yaml` holds the data checks (see `data_checks.py`).
+
 ---
 
 ## src/utils
@@ -313,6 +316,37 @@ Small helpers used by every stage:
   process. `search.py` and `market_estimate.load_sales` share one copy of the
   145 MB feature table this way, instead of each parsing it, so callers must
   not modify the result.
+
+### `data_checks.py`
+
+`check(df, name)` returns `df` if it passes the rules for `name` in
+`config/schema.yaml`, and otherwise raises `DataCheckError` listing every
+problem at once. Two files are checked:
+
+- `county_raw`: the county export, as `data_preprocessing.load_mecklenburg`
+  reads it. This file is placed by hand, so a new export can change without
+  anything failing on its own: a new date format used to turn every sale date
+  into a blank (`errors="coerce"`), a new decimal separator turned numbers into
+  text that the cleaning then blanked, and an export that fixed the swapped
+  x/y columns would have moved every house out of the county.
+- `features`: the feature table, before `feature_engineering.run` writes it.
+  A failure leaves the previous file in place, so nothing downstream reruns.
+  Every column training uses must be listed (a test checks this).
+
+The rules per column are the share allowed missing, whether it must have been
+read as numbers, a range, the allowed values, and a date format with the share
+allowed after today. The limits are wide: they were set from the current files
+with room to spare, to catch a changed export or a partial download, not single
+odd values, which the cleaning handles. When the data changes for a reason,
+change the limits in `config/schema.yaml`.
+
+An example, an export whose coordinates are no longer swapped:
+
+```
+DataCheckError: county_raw failed 2 checks (rules in config/schema.yaml):
+  - xcoord: outside [34.95, 35.6] in 448,174 rows, 100.00% (values from -81.05625717 to -80.55337643); at most 0.00% allowed
+  - ycoord: outside [-81.1, -80.5] in 448,174 rows, 100.00% (values from 35.00921371 to 35.51072643); at most 0.00% allowed
+```
 
 ---
 
@@ -1531,14 +1565,19 @@ data nor the trained models:
   tool schemas.
 - `test_api.py`: the page, `/api/chat`, the 503 for a missing Ollama server,
   a bad request.
+- `test_data_checks.py`: a good export passes, and the schema lists every
+  column preprocessing reads; a changed decimal separator, swapped
+  coordinates, a new date format, future dates, an unknown town and too many
+  missing values are each caught, and all problems are reported at once; the
+  feature checks cover every column training uses.
 - `test_pipeline.py`: skipping, rerunning after a newer input, `--from`,
   `--dry-run`, missing inputs, and that every stage's input is made by an
   earlier stage.
 
 `test_with_local_data.py` (marked `data`) checks the real files: each test
 address is one house, the model is within 20% of the county value for the
-first two, and every `market_test_houses` house takes the path in its
-`expect`. These tests skip themselves when the files are missing, as in CI.
+first two, every `market_test_houses` house takes the path in its `expect`,
+and the county export and the feature table pass their data checks. These tests skip themselves when the files are missing, as in CI.
 
 ## CI/CD
 
@@ -1619,7 +1658,10 @@ copied into the image). The health check requests `/`. The image is about
 - The promotion check compares test MAE only. It doesn't look at RMSE, the
   10-house validation or the market estimate paths, which run after `train`
   (`validate`, `check_houses`) and only report.
-- `config/schema.yaml` is empty.
+- Sale dates in the county export have two-digit years, so a sale before
+  1969 reads as 20xx: 206 rows fall in 2031 to 2068. All but one have no sale
+  price, and none reaches the sale features, so they are left as they are;
+  `config/schema.yaml` allows up to 0.2% future dates for them.
 
 ## Repository layout
 
@@ -1628,7 +1670,7 @@ src/components/   pipeline stages
 src/utils/        config loading and CSV helpers
 src/pipeline/     run.py: runs the stages in order, skipping those that are up to date
 api/              chat UI v1.0: main.py (FastAPI) and static/index.html
-config/           config.yaml, schema.yaml (empty)
+config/           config.yaml; schema.yaml, the data checks
 data/raw/         downloaded and hand-placed source files
 data/processed/   cleaned properties and places map
 data/features/    feature table used for training and search
