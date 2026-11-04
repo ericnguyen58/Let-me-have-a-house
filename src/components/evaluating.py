@@ -52,6 +52,8 @@ FEATURE_GROUPS = {
         "price_momentum",
         "neighborhood_adjusted_price_per_sqft",
         "neighborhood_sale_years",
+        "area_adjusted_price_per_sqft",
+        "area_sale_count",
     ],
     "neighborhood_price": [NEIGHBORHOOD_PRICE],
     "accessibility": [

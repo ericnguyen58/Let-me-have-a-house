@@ -106,6 +106,8 @@ NUMERIC_FEATURES = [
     "light_rail_miles",
     "neighborhood_adjusted_price_per_sqft",
     "neighborhood_sale_years",
+    "area_adjusted_price_per_sqft",
+    "area_sale_count",
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 FEATURE_SETS = {
