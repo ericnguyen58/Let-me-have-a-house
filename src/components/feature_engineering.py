@@ -60,8 +60,6 @@ MIN_MOMENTUM_SALES = 30
 # to its level and the timing of a neighborhood's sales is measured from it.
 ASSESSMENT_DATE = pd.Timestamp("2023-01-01")
 SQFT_PER_ACRE = 43560
-# Sales nearest each house that nearby_adjusted_price_per_sqft takes the median of
-NEARBY_SALES = 10
 
 # Health care and activity are counted within this radius; 5 miles still separates
 # dense and sparse parts of the county (e.g. ~620 activity places around Uptown vs ~70
@@ -388,44 +386,34 @@ def adjusted_sales(source):
 
 
 def add_adjusted_aggregates(df, source=None):
-    """Neighborhood and area aggregates of adjusted_sales(source) (default: df itself):
-    the median adjusted price_per_sqft, how long before or after ASSESSMENT_DATE the
-    neighborhood's sales were, the area's sale count, and the neighborhood's typical sold
-    house, for the interactions in add_interactions."""
+    """Neighborhood aggregates of adjusted_sales(source) (default: df itself) that leave
+    out the house's own sale: the geometric mean adjusted price_per_sqft and the mean
+    years from ASSESSMENT_DATE to the neighborhood's sales. Means rather than medians so
+    the own sale can be taken out; with it in, a training house in a neighborhood of few
+    sales sees mostly its own price, which a test house never does. Also the
+    neighborhood's typical sold house, for add_interactions."""
     sales = adjusted_sales(df if source is None else source)
-    nbhd = sales.groupby(["county", "neighborhood_code"]).agg(
-        neighborhood_adjusted_price_per_sqft=("adjusted_price_per_sqft", "median"),
-        neighborhood_sale_years=("sale_years", "median"),
+    sales["log_price"] = np.log(sales["adjusted_price_per_sqft"])
+    keys = ["county", "neighborhood_code"]
+    nbhd = sales.groupby(keys).agg(
+        sales=("log_price", "size"),
+        log_price=("log_price", "sum"),
+        sale_years=("sale_years", "sum"),
         neighborhood_heated_area=("heated_area", "median"),
         neighborhood_year_built=("year_built", "median"),
-        neighborhood_acreage=("acreage", "median"),
     )
-    area = sales.groupby("area").agg(
-        area_adjusted_price_per_sqft=("adjusted_price_per_sqft", "median"),
-        area_sale_count=("adjusted_price_per_sqft", "size"),
+    # the feature file lists some parcels twice, so a parcel can have two sales here
+    own = sales.groupby(keys + ["parcel_id"]).agg(
+        own_sales=("log_price", "size"), own_log_price=("log_price", "sum"), own_sale_years=("sale_years", "sum")
     )
-    return df.merge(nbhd.reset_index(), on=["county", "neighborhood_code"], how="left").merge(
-        area.reset_index(), on="area", how="left"
+    out = df.merge(nbhd.reset_index(), on=keys, how="left").merge(
+        own.reset_index(), on=keys + ["parcel_id"], how="left"
     )
-
-
-def add_nearby_sales(df, source=None):
-    """nearby_adjusted_price_per_sqft: median adjusted price_per_sqft of the NEARBY_SALES
-    sales of `source` (default: df itself) nearest the house, leaving out the house's own
-    sale - with so few sales its own would weigh too much on its feature. Finer than the
-    neighborhood: a street on the lake or next to the highway can sell for very different
-    prices than the rest of its neighborhood. NaN for houses missing coordinates."""
-    sales = adjusted_sales(df if source is None else source).dropna(subset=["latitude", "longitude"])
-    houses = df[["latitude", "longitude"]].dropna()
-    tree = BallTree(np.radians(sales[["latitude", "longitude"]]), metric="haversine")
-    # one more than needed per copy of a parcel: the feature file lists some parcels twice
-    _, idx = tree.query(np.radians(houses), k=NEARBY_SALES + 2)
-    prices = sales["adjusted_price_per_sqft"].to_numpy()[idx]
-    own = sales["parcel_id"].to_numpy()[idx] == df.loc[houses.index, "parcel_id"].to_numpy()[:, None]
-    nearest = ~own & (np.cumsum(~own, axis=1) <= NEARBY_SALES)
-    median = np.nanmedian(np.where(nearest, prices, np.nan), axis=1)
-    df["nearby_adjusted_price_per_sqft"] = pd.Series(median, index=houses.index).reindex(df.index)
-    return df
+    others = out["sales"] - out["own_sales"].fillna(0)
+    others = others.where(others > 0)
+    out["neighborhood_adjusted_price_per_sqft"] = np.exp((out["log_price"] - out["own_log_price"].fillna(0)) / others)
+    out["neighborhood_sale_years"] = (out["sale_years"] - out["own_sale_years"].fillna(0)) / others
+    return out.drop(columns=["sales", "log_price", "sale_years", "own_sales", "own_log_price", "own_sale_years"])
 
 
 def add_interactions(df):
@@ -436,12 +424,7 @@ def add_interactions(df):
     df["relative_heated_area"] = df["heated_area"] / df["neighborhood_heated_area"]
     df["relative_year_built"] = df["year_built"] - df["neighborhood_year_built"]
     df["lot_sqft_per_heated_sqft"] = df["acreage"] * SQFT_PER_ACRE / df["heated_area"].where(df["heated_area"] > 0)
-    df["relative_acreage"] = df["acreage"] / df["neighborhood_acreage"].where(df["neighborhood_acreage"] > 0)
-    bedrooms = df["bedrooms"].where(df["bedrooms"] > 0)
-    df["heated_area_per_bedroom"] = df["heated_area"] / bedrooms
-    df["bathrooms_per_bedroom"] = df["bathrooms"] / bedrooms
-    df["heated_area_x_age"] = df["heated_area"] * df["property_age"]
-    return df.drop(columns=["neighborhood_heated_area", "neighborhood_year_built", "neighborhood_acreage"])
+    return df.drop(columns=["neighborhood_heated_area", "neighborhood_year_built"])
 
 
 def add_sale_features(df, source=None):

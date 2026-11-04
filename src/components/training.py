@@ -75,7 +75,6 @@ SALE_DERIVED_FEATURES = [
     "neighborhood_value_estimate",
     "relative_heated_area",
     "relative_year_built",
-    "relative_acreage",
 ]
 
 CATEGORICAL_FEATURES = ["land_use_class", "area"]
@@ -111,10 +110,6 @@ NUMERIC_FEATURES = [
     "relative_heated_area",
     "relative_year_built",
     "lot_sqft_per_heated_sqft",
-    "relative_acreage",
-    "heated_area_per_bedroom",
-    "bathrooms_per_bedroom",
-    "heated_area_x_age",
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 FEATURE_SETS = {

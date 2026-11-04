@@ -54,10 +54,6 @@ FEATURE_GROUPS = {
         "relative_heated_area",
         "relative_year_built",
         "lot_sqft_per_heated_sqft",
-        "relative_acreage",
-        "heated_area_per_bedroom",
-        "bathrooms_per_bedroom",
-        "heated_area_x_age",
     ],
     "location": [
         "area",
