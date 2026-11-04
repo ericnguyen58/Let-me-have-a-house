@@ -56,6 +56,10 @@ MOMENTUM_END = pd.Timestamp("2023-01-01")
 # Below this many sales in the window a neighborhood's trend is too noisy, and the
 # house's area trend is used instead (446 of ~2,900 neighborhoods clear it, ~46% of houses).
 MIN_MOMENTUM_SALES = 30
+# The January 1, 2023 revaluation total_value comes from: neighborhood prices are moved
+# to its level and the timing of a neighborhood's sales is measured from it.
+ASSESSMENT_DATE = pd.Timestamp("2023-01-01")
+SQFT_PER_ACRE = 43560
 
 # Health care and activity are counted within this radius; 5 miles still separates
 # dense and sparse parts of the county (e.g. ~620 activity places around Uptown vs ~70
@@ -365,11 +369,60 @@ def add_price_momentum(df, source=None):
     return out.drop(columns=["growth", "sales", "area_growth"])
 
 
+def adjusted_sales(source):
+    """source's sales (rows with a price_per_sqft) with sale_years, years from
+    ASSESSMENT_DATE to the sale (negative before it), and adjusted_price_per_sqft: the price
+    moved to the county's level in the year before ASSESSMENT_DATE by the county's median
+    price_per_sqft in the sale's quarter. The county median doubled from 2016 to 2022, so
+    a neighborhood whose sales are mostly old would otherwise look cheap."""
+    sales = source.loc[source["price_per_sqft"].notna()].copy()
+    sale_date = pd.to_datetime(sales["sale_date"], format="mixed")
+    sales["sale_years"] = (sale_date - ASSESSMENT_DATE).dt.days / 365.25
+    log_ppsf = np.log(sales["price_per_sqft"])
+    quarter_median = log_ppsf.groupby(sale_date.dt.to_period("Q")).transform("median")
+    reference = log_ppsf[sales["sale_years"].between(-1, 0, inclusive="left")].median()
+    sales["adjusted_price_per_sqft"] = np.exp(log_ppsf - quarter_median + reference)
+    return sales
+
+
+def add_adjusted_aggregates(df, source=None):
+    """Neighborhood and area aggregates of adjusted_sales(source) (default: df itself):
+    the median adjusted price_per_sqft, how long before or after ASSESSMENT_DATE the
+    neighborhood's sales were, the area's sale count, and the neighborhood's typical sold
+    house, for the interactions in add_interactions."""
+    sales = adjusted_sales(df if source is None else source)
+    nbhd = sales.groupby(["county", "neighborhood_code"]).agg(
+        neighborhood_adjusted_price_per_sqft=("adjusted_price_per_sqft", "median"),
+        neighborhood_sale_years=("sale_years", "median"),
+        neighborhood_heated_area=("heated_area", "median"),
+        neighborhood_year_built=("year_built", "median"),
+    )
+    area = sales.groupby("area").agg(
+        area_adjusted_price_per_sqft=("adjusted_price_per_sqft", "median"),
+        area_sale_count=("adjusted_price_per_sqft", "size"),
+    )
+    return df.merge(nbhd.reset_index(), on=["county", "neighborhood_code"], how="left").merge(
+        area.reset_index(), on="area", how="left"
+    )
+
+
+def add_interactions(df):
+    """Products and ratios of two columns, which a tree can't build from splits on each
+    one: the house's size at its neighborhood's adjusted price, its size and age against
+    the neighborhood's typical sold house, and its lot per square foot of house."""
+    df["neighborhood_value_estimate"] = df["heated_area"] * df["neighborhood_adjusted_price_per_sqft"]
+    df["relative_heated_area"] = df["heated_area"] / df["neighborhood_heated_area"]
+    df["relative_year_built"] = df["year_built"] - df["neighborhood_year_built"]
+    df["lot_sqft_per_heated_sqft"] = df["acreage"] * SQFT_PER_ACRE / df["heated_area"].where(df["heated_area"] > 0)
+    return df.drop(columns=["neighborhood_heated_area", "neighborhood_year_built"])
+
+
 def add_sale_features(df, source=None):
     """Every feature computed from sales (training.SALE_DERIVED_FEATURES), from `source`
     rows (default: df itself). The one place they are built: the feature file, training.py's
     split, the backtest's refits (market_estimate) and lookup_property all call this."""
-    return add_price_momentum(add_neighborhood_aggregates(df, source=source), source=source)
+    df = add_price_momentum(add_neighborhood_aggregates(df, source=source), source=source)
+    return add_interactions(add_adjusted_aggregates(df, source=source))
 
 
 def build_features(df, nc_places_df, raw_path):
