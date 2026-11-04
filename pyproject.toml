@@ -33,6 +33,10 @@ dev = [
     "pytest>=9.2.0",
     "ruff>=0.17.3",
 ]
+# not installed by default: only needed if "lightgbm" is added to training.MODEL_TYPES
+lightgbm = [
+    "lightgbm>=4.7.0",
+]
 notebooks = [
     "ipykernel>=7.3.0",
     "matplotlib>=3.11.1",

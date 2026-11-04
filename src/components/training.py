@@ -4,9 +4,10 @@ Reads data/features/properties_features.csv and trains each model type in
 MODEL_TYPES on two feature sets. Only histogram gradient boosting is enabled for now -
 on a validation split carved from the training rows it beat the tuned random forest
 on every metric (MAE $29,407 vs $33,066, RMSE $78,464 vs $88,876), and its saved
-models are a few MB instead of over 1GB - so 2 models are trained. The random forest
-and xgboost setups are kept in build_search_estimators and can be switched back on by
-adding them to MODEL_TYPES (xgboost after `uv sync --group xgboost`).
+models are a few MB instead of over 1GB - so 2 models are trained. The random forest,
+xgboost and lightgbm setups are kept in build_search_estimators and can be switched on by
+adding them to MODEL_TYPES (xgboost and lightgbm after `uv sync --group xgboost` or
+`--group lightgbm`).
 
 - with_neighborhood_price: every feature, including neighborhood_median_price_per_sqft
 - without_neighborhood_price: the same minus that column. The neighborhood price
@@ -99,9 +100,9 @@ FEATURE_SETS = {
     "with_neighborhood_price": FEATURE_COLUMNS,
     "without_neighborhood_price": [c for c in FEATURE_COLUMNS if c != NEIGHBORHOOD_PRICE],
 }
-# Model types trained, validated and served. "random_forest" and "xgboost" are also
-# available (see build_search_estimators) but left out for now; xgboost also needs
-# `uv sync --group xgboost`.
+# Model types trained, validated and served. "random_forest", "xgboost" and "lightgbm" are
+# also available (see build_search_estimators) but left out for now; xgboost and lightgbm
+# also need `uv sync --group xgboost` or `--group lightgbm`.
 MODEL_TYPES = ["hist_gradient_boosting"]
 # The metric model selection optimizes, here and in finetune.py.
 SELECTION_METRIC = "mae"
@@ -194,12 +195,24 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
     "subsample": [0.7, 0.8, 0.9, 1.0],
     "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
 }
+# A fixed number of rounds instead of early stopping: LightGBM's scikit-learn API only
+# stops early on an eval set passed to fit, which neither the search nor the backtest does.
+LIGHTGBM_PARAM_DISTRIBUTIONS = {
+    "n_estimators": [500, 1000, 2000],
+    "learning_rate": [0.02, 0.05, 0.1],
+    "num_leaves": [63, 127, 255, 511],
+    "min_child_samples": [5, 10, 20, 50],
+    "subsample": [0.7, 0.8, 1.0],
+    "colsample_bytree": [0.5, 0.8, 1.0],
+    "reg_lambda": [0.0, 0.1, 1.0],
+}
 
 
 def build_search_estimators(random_state, training_cfg, model_types=MODEL_TYPES):
-    """A hyperparameter search for each of `model_types`. xgboost is imported only when it
-    is asked for: it is an optional dependency (`uv sync --group xgboost`), left out of the
-    default install and the Docker image while it isn't in MODEL_TYPES."""
+    """A hyperparameter search for each of `model_types`. xgboost and lightgbm are imported
+    only when they are asked for: they are optional dependencies (`uv sync --group xgboost`,
+    `--group lightgbm`), left out of the default install and the Docker image while they
+    aren't in MODEL_TYPES."""
     # n_jobs=1 on each base estimator, n_jobs=-1 on the search itself: parallelizes across
     # search candidates/CV folds (separate worker processes) instead of nesting parallelism
     # inside each fit. Also required for xgboost specifically - on this xgboost 3.4.1 /
@@ -221,6 +234,15 @@ def build_search_estimators(random_state, training_cfg, model_types=MODEL_TYPES)
 
         return XGBRegressor(random_state=random_state, n_jobs=1, tree_method="approx"), XGBOOST_PARAM_DISTRIBUTIONS
 
+    def lightgbm():
+        from lightgbm import LGBMRegressor
+
+        # n_jobs=0 leaves the thread count to OpenMP, like hist_gradient_boosting (joblib
+        # limits it per search worker); LightGBM's default, None, takes every core.
+        # subsample_freq=1 makes subsample (bagging) apply at every round.
+        model = LGBMRegressor(random_state=random_state, n_jobs=0, subsample_freq=1, verbose=-1)
+        return model, LIGHTGBM_PARAM_DISTRIBUTIONS
+
     estimators = {
         # no n_jobs: it uses OpenMP threads, which joblib limits per search worker
         "hist_gradient_boosting": lambda: (
@@ -238,6 +260,7 @@ def build_search_estimators(random_state, training_cfg, model_types=MODEL_TYPES)
             RANDOM_FOREST_PARAM_DISTRIBUTIONS,
         ),
         "xgboost": xgboost,
+        "lightgbm": lightgbm,
     }
     return {name: RandomizedSearchCV(*estimators[name](), **search_kwargs) for name in model_types}
 
