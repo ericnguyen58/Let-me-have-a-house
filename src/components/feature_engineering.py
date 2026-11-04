@@ -398,6 +398,7 @@ def add_adjusted_aggregates(df, source=None):
         neighborhood_sale_years=("sale_years", "median"),
         neighborhood_heated_area=("heated_area", "median"),
         neighborhood_year_built=("year_built", "median"),
+        neighborhood_acreage=("acreage", "median"),
     )
     area = sales.groupby("area").agg(
         area_adjusted_price_per_sqft=("adjusted_price_per_sqft", "median"),
@@ -435,7 +436,12 @@ def add_interactions(df):
     df["relative_heated_area"] = df["heated_area"] / df["neighborhood_heated_area"]
     df["relative_year_built"] = df["year_built"] - df["neighborhood_year_built"]
     df["lot_sqft_per_heated_sqft"] = df["acreage"] * SQFT_PER_ACRE / df["heated_area"].where(df["heated_area"] > 0)
-    return df.drop(columns=["neighborhood_heated_area", "neighborhood_year_built"])
+    df["relative_acreage"] = df["acreage"] / df["neighborhood_acreage"].where(df["neighborhood_acreage"] > 0)
+    bedrooms = df["bedrooms"].where(df["bedrooms"] > 0)
+    df["heated_area_per_bedroom"] = df["heated_area"] / bedrooms
+    df["bathrooms_per_bedroom"] = df["bathrooms"] / bedrooms
+    df["heated_area_x_age"] = df["heated_area"] * df["property_age"]
+    return df.drop(columns=["neighborhood_heated_area", "neighborhood_year_built", "neighborhood_acreage"])
 
 
 def add_sale_features(df, source=None):
@@ -443,8 +449,7 @@ def add_sale_features(df, source=None):
     rows (default: df itself). The one place they are built: the feature file, training.py's
     split, the backtest's refits (market_estimate) and lookup_property all call this."""
     df = add_price_momentum(add_neighborhood_aggregates(df, source=source), source=source)
-    df = add_interactions(add_adjusted_aggregates(df, source=source))
-    return add_nearby_sales(df, source=source)
+    return add_interactions(add_adjusted_aggregates(df, source=source))
 
 
 def build_features(df, nc_places_df, raw_path):

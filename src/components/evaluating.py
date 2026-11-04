@@ -54,6 +54,10 @@ FEATURE_GROUPS = {
         "relative_heated_area",
         "relative_year_built",
         "lot_sqft_per_heated_sqft",
+        "relative_acreage",
+        "heated_area_per_bedroom",
+        "bathrooms_per_bedroom",
+        "heated_area_x_age",
     ],
     "location": [
         "area",
@@ -64,7 +68,6 @@ FEATURE_GROUPS = {
         "neighborhood_adjusted_price_per_sqft",
         "neighborhood_sale_years",
         "neighborhood_value_estimate",
-        "nearby_adjusted_price_per_sqft",
     ],
     "neighborhood_price": [NEIGHBORHOOD_PRICE],
     "accessibility": [
