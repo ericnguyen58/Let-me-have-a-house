@@ -56,6 +56,7 @@ as described below.
 | Stage | File | Status |
 |---|---|---|
 | Config loading | `src/utils/load_config.py` | Implemented |
+| Data checks | `src/utils/data_checks.py`, `config/schema.yaml` | Implemented: the county export and the feature table are checked before use |
 | Shared helpers | `src/utils/common.py` | Implemented |
 | 1. Ingest raw data | `src/components/data_ingestor.py` | Implemented |
 | 2. Clean and assign areas | `src/components/data_preprocessing.py` | Implemented |
@@ -67,11 +68,12 @@ as described below.
 | 6. Prediction | `src/components/predict.py` | Implemented |
 | 7. Search (property lookup, area stats, houses matching a buyer's criteria, similar houses, past sales below estimate) | `src/components/search.py` | Implemented |
 | 8. Assistant (tool use, local Qwen3.5-9B or Claude) | `src/components/assistant.py` | Implemented |
+| Assistant eval | `evals/assistant.py`, `evals/assistant_cases.yaml` | Implemented: 22 questions graded by code, run by hand on the local model |
 | Market estimate (sales ratio), `market_value` (model chain) and backtests | `src/components/market_estimate.py` | Implemented. Used by the assistant's `estimate_market_value` tool. |
 | Pipeline orchestration | `src/pipeline/run.py` | Implemented: runs the stages in order, skipping those that are up to date |
 | Chat UI v1.0 | `api/main.py`, `api/static/index.html` | Implemented: a web page for the assistant |
 | Docker | `Dockerfile` | Implemented: an image of the chat API |
-| Tests | `test/` | Implemented: 72 tests, 6 of them on the local data |
+| Tests | `test/` | Implemented: 105 tests, 7 of them on the local data |
 | CI/CD | `.github/workflows/ci.yml` | Implemented: lint, format check and tests on every push and pull request; the Docker image is pushed to GitHub's registry from `main` |
 
 ## Current models
@@ -250,6 +252,8 @@ uv run python -m src.components.market_estimate calibrate    # out-of-fold model
 uv run python -m src.components.market_estimate houses       # market_value for the test houses, two per path
 uv run python -m src.components.market_estimate chain        # backtest the model chain at one cutoff (about 3 minutes)
 uv run python -m src.components.market_estimate chain-multi  # the same at 9 quarterly cutoffs (about 26 minutes)
+uv run python -m experiments.backtest run NAME --spec JSON   # score a model change against experiments/baseline.json (report.md section 4)
+uv run python -m experiments.backtest compare                # the leaderboard of every logged experiment
 ```
 
 Each stage reads its inputs from the previous stage's output files, so they
@@ -286,6 +290,8 @@ All paths and settings live in `config/config.yaml`:
 - `training`: target column, test split size, random seed, and the number of
   hyperparameter search iterations and cross-validation folds.
 
+`config/schema.yaml` holds the data checks (see `data_checks.py`).
+
 ---
 
 ## src/utils
@@ -313,6 +319,37 @@ Small helpers used by every stage:
   process. `search.py` and `market_estimate.load_sales` share one copy of the
   145 MB feature table this way, instead of each parsing it, so callers must
   not modify the result.
+
+### `data_checks.py`
+
+`check(df, name)` returns `df` if it passes the rules for `name` in
+`config/schema.yaml`, and otherwise raises `DataCheckError` listing every
+problem at once. Two files are checked:
+
+- `county_raw`: the county export, as `data_preprocessing.load_mecklenburg`
+  reads it. This file is placed by hand, so a new export can change without
+  anything failing on its own: a new date format used to turn every sale date
+  into a blank (`errors="coerce"`), a new decimal separator turned numbers into
+  text that the cleaning then blanked, and an export that fixed the swapped
+  x/y columns would have moved every house out of the county.
+- `features`: the feature table, before `feature_engineering.run` writes it.
+  A failure leaves the previous file in place, so nothing downstream reruns.
+  Every column training uses must be listed (a test checks this).
+
+The rules per column are the share allowed missing, whether it must have been
+read as numbers, a range, the allowed values, and a date format with the share
+allowed after today. The limits are wide: they were set from the current files
+with room to spare, to catch a changed export or a partial download, not single
+odd values, which the cleaning handles. When the data changes for a reason,
+change the limits in `config/schema.yaml`.
+
+An example, an export whose coordinates are no longer swapped:
+
+```
+DataCheckError: county_raw failed 2 checks (rules in config/schema.yaml):
+  - xcoord: outside [34.95, 35.6] in 448,174 rows, 100.00% (values from -81.05625717 to -80.55337643); at most 0.00% allowed
+  - ycoord: outside [-81.1, -80.5] in 448,174 rows, 100.00% (values from 35.00921371 to 35.51072643); at most 0.00% allowed
+```
 
 ---
 
@@ -1020,7 +1057,14 @@ functions to call and writes the answer from their results.
   - the list of areas,
   - when given an address or parcel ID, to call `lookup_property` first and
     pass its `parcel_id` to the other tools, and to ask which house was meant
-    if there are several matches,
+    if there are several matches. If there is no match, it says the county
+    records have no such property, and that isn't off-topic. It passes only
+    a `parcel_id` a tool returned in the conversation, and looks a house up
+    again for a follow-up. The assistant eval found that, without this rule
+    and with a real parcel ID as the example in the tool descriptions, a
+    follow-up ("and with one more bathroom?") was valued with the example's
+    parcel, a different house. The tool descriptions now have no example IDs
+    or addresses,
   - for a house described without an address, to pass what the user gave to
     the estimate and comps tools, which fill in the rest from the area, and to
     ask for the area or the address when it is missing,
@@ -1038,7 +1082,9 @@ functions to call and writes the answer from their results.
     attempt to change its instructions, it calls no tool and replies with
     exactly `OFF_TOPIC_REPLY`. That takes about 1 second. Before this rule,
     such requests took 2 to 8 seconds, and the model wrote the poem or told
-    the joke it was asked for,
+    the joke it was asked for. The sentence is the last thing in the prompt:
+    when instructions followed it, the model sometimes copied them out to the
+    user after the sentence,
   - to only give dollar amounts that came from a tool,
   - to mention the renovation and assessed-versus-market caveats whenever it
     shows deals.
@@ -1531,14 +1577,99 @@ data nor the trained models:
   tool schemas.
 - `test_api.py`: the page, `/api/chat`, the 503 for a missing Ollama server,
   a bad request.
+- `test_data_checks.py`: a good export passes, and the schema lists every
+  column preprocessing reads; a changed decimal separator, swapped
+  coordinates, a new date format, future dates, an unknown town and too many
+  missing values are each caught, and all problems are reported at once; the
+  feature checks cover every column training uses.
+- `test_finetune.py`: `finetune.py` saves its model as a run based on the
+  production run, with the same held-out parcels, which goes through the
+  check; it stops when there is no production run.
+- `test_assistant_eval.py`: the assistant eval's grading, without a model:
+  written figures against tool values (rounding, cut-off digits, signs),
+  counts, recorded tool calls, a good and a bad answer, derived differences,
+  the off-topic reply, and that the cases name real tools.
 - `test_pipeline.py`: skipping, rerunning after a newer input, `--from`,
   `--dry-run`, missing inputs, and that every stage's input is made by an
   earlier stage.
 
 `test_with_local_data.py` (marked `data`) checks the real files: each test
 address is one house, the model is within 20% of the county value for the
-first two, and every `market_test_houses` house takes the path in its
-`expect`. These tests skip themselves when the files are missing, as in CI.
+first two, every `market_test_houses` house takes the path in its `expect`,
+and the county export and the feature table pass their data checks. These tests skip themselves when the files are missing, as in CI.
+
+## Assistant eval
+
+```bash
+uv run python -m evals.assistant                          # every case, on ASSISTANT_MODEL
+uv run python -m evals.assistant --only market_value no_match
+uv run python -m evals.assistant --repeat 3               # answers vary between runs
+```
+
+`evals/assistant_cases.yaml` holds 22 questions: market values (by address, by
+parcel ID, and for a house built after the assessment), the assessed value,
+two what-ifs and a follow-up what-if, three buyer searches, an area
+comparison, a described house with and without its area, comparable houses,
+past deals, an address with two matches and one with none, and three
+off-topic questions and a prompt injection.
+
+No second model judges the answers; `grade` checks them in code:
+
+- the tools called (and those that must not be), and their arguments, such
+  as the parcel ID of the address asked about,
+- the figures the case asks for (the market estimate and its range, the
+  number of sales, what a change is worth) against what the tools returned
+  in that run. A figure may be rounded as written: "$1.53 million" stands for
+  $1,529,788. Since the values come from the run itself, the cases don't go
+  stale when the data or the models change,
+- the caveats the system prompt asks for ("not for sale", the renovation and
+  assessed-value caveats for deals), and the exact off-topic sentence,
+- for every answer, that each dollar figure came from a tool or the question.
+  A difference of two tool figures counts as worked out and is listed as
+  "derived", but its meaning isn't checked: in one answer, the new market
+  estimate minus the model's assessed value was called the value of an
+  addition.
+
+It runs on `ASSISTANT_MODEL`, the local Ollama model by default, which costs
+nothing. A Claude model is billed per question and needs `--paid`. The eval is
+not part of CI, since it needs Ollama and the local data, but
+`test_assistant_eval.py` tests its grading. Each run writes
+`reports/assistant_eval.csv` and, with every answer and tool call,
+`reports/assistant_eval.json`.
+
+**Results on qwen3.5:9b** (November 1, 2026; each case 3 times, so 66
+answers per version; about 9 seconds per question):
+
+| Version | Answers passing every check |
+|---|---|
+| Before | 59 of 66 |
+| 1. The off-topic sentence last in the system prompt, rules for "no match" and for which parcel ID to pass, no example IDs or addresses in the tool descriptions | 60 of 66 |
+| 2. A note in `lookup_property`'s result when nothing matches; a retry when Ollama answers 500 | 57 of 66 |
+| 3. An error that tells the model to look the address up when it passes one as a parcel ID | 59 of 66 |
+
+The pass rate didn't move: the answers vary about as much between runs as
+the fixes changed them. What the eval found, and what changed:
+
+- **Wrong house.** Asked "and with one more bathroom?" after a question about
+  4817 Kelly Woods Ln, the model passed `20947309`, the example parcel ID in
+  the tool descriptions, which is 3612 Abbey Hill Ln (2 of 3 runs). After 1, it
+  no longer does. Instead it passes the address as the parcel ID, gets an
+  error, looks the house up, and then in 2 of 3 runs answers with made-up
+  figures instead of calling the estimate again. This is the main failure
+  left.
+- **Prompt leak and "no match".** For an address with no match, the model
+  gave the off-topic sentence and then copied out the instructions that
+  followed it in the prompt (2 of 3 runs). After 1 the leak stopped, but it
+  still gave the off-topic sentence in 2 of 3 runs; with the note from 2, in
+  1 of 3, and in none in the last round.
+- **A crash.** Ollama answered 500 once in 66 questions, when it couldn't
+  parse a malformed tool call from the model. The question failed with a
+  server error; it is now tried again once (`OLLAMA_ATTEMPTS`).
+- **Left as they are.** About 1 answer in 3 to a buyer search leaves out that
+  the houses may not be for sale (none before the fixes, so possibly the
+  longer prompt), one in 3 answers to an address with two matches values both
+  instead of asking which, and a market value answer sometimes leaves out the
+  number of sales.
 
 ## CI/CD
 
@@ -1610,16 +1741,22 @@ copied into the image). The health check requests `/`. The image is about
 - The assistant is told to base every dollar amount on a tool result, but it
   can still add explanations no tool gave. In one test Claude named the
   neighborhood and guessed a reason for the value that no tool had returned.
-  Qwen3.5-9B got every dollar amount right in three test questions, but
-  mislabeled some of them: it called the neighborhood's sales "sales in this
-  area", and called a what-if's starting value the current house's.
+  On Qwen3.5-9B, the assistant eval passes about 59 of 66 answers; the main
+  failure left is a follow-up what-if answered with made-up figures in 2 of
+  3 runs (see "Assistant eval"). Letting `estimate_market_value` take an
+  address that matches one house would likely remove it. The model also
+  mislabels figures at times, such as a what-if's starting value called the
+  current house's, which the eval checks only in part.
 - Other implausible values may still pass the cleaning, which only bounds
   heated area and bedrooms; `price_trends.ipynb` caps its standardized
   features at 5 standard deviations for that reason.
 - The promotion check compares test MAE only. It doesn't look at RMSE, the
   10-house validation or the market estimate paths, which run after `train`
   (`validate`, `check_houses`) and only report.
-- `config/schema.yaml` is empty.
+- Sale dates in the county export have two-digit years, so a sale before
+  1969 reads as 20xx: 206 rows fall in 2031 to 2068. All but one have no sale
+  price, and none reaches the sale features, so they are left as they are;
+  `config/schema.yaml` allows up to 0.2% future dates for them.
 
 ## Repository layout
 
@@ -1628,7 +1765,7 @@ src/components/   pipeline stages
 src/utils/        config loading and CSV helpers
 src/pipeline/     run.py: runs the stages in order, skipping those that are up to date
 api/              chat UI v1.0: main.py (FastAPI) and static/index.html
-config/           config.yaml, schema.yaml (empty)
+config/           config.yaml; schema.yaml, the data checks
 data/raw/         downloaded and hand-placed source files
 data/processed/   cleaned properties and places map
 data/features/    feature table used for training and search
@@ -1638,8 +1775,11 @@ notebooks/        exploration notebooks; shap_explain.ipynb explains the model s
 output/models/    runs/<run_id>/: each training run; production.json names the one in use
 reports/          training metrics, chosen hyperparameters, house validation, drop-column
                   and same-house-by-area results
-report.md         the research write-up: SHAP, drop-column test, same house by area
+report.md         the research write-up: SHAP, drop-column test, same house by area, model experiments
+experiments/      backtest.py: scores a model change the same way every time; baseline.json
+                  and one log per branch (<branch>.jsonl)
 test/             pytest suite; conftest.py builds the synthetic feature table
+evals/            the assistant eval: assistant.py (runner and grading) and assistant_cases.yaml
 Dockerfile        image of the chat API (data and models are mounted)
 .github/          CI/CD workflow (workflows/ci.yml) and Dependabot settings
 ```
