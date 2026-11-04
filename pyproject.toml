@@ -11,6 +11,7 @@ dependencies = [
     "anthropic>=1.8.0",
     "fastapi>=0.141.1",
     "geopandas>=1.1.4",
+    "lightgbm>=4.7.0",
     "numpy>=2.5.2",
     "openpyxl>=3.1.5",
     "overturemaps>=1.0.2",
@@ -32,10 +33,6 @@ dev = [
     "nbconvert>=7.17.1",
     "pytest>=9.2.0",
     "ruff>=0.17.3",
-]
-# not installed by default: only needed if "lightgbm" is added to training.MODEL_TYPES
-lightgbm = [
-    "lightgbm>=4.7.0",
 ]
 notebooks = [
     "ipykernel>=7.3.0",

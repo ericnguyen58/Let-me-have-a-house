@@ -61,6 +61,4 @@ def test_dollar_mae_reads_log_values():
 def test_only_the_model_types_in_use_are_built():
     searches = training.build_search_estimators(0, {"search_iter": 1, "cv_folds": 2})
     assert list(searches) == training.MODEL_TYPES
-    # optional dependencies, imported only when asked for
-    assert "xgboost" not in sys.modules
-    assert "lightgbm" not in sys.modules
+    assert "xgboost" not in sys.modules  # an optional dependency, imported only when asked for

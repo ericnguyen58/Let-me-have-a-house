@@ -108,8 +108,11 @@ def synthetic_training():
     cfg = {"test_size": 0.25, "random_state": 0, "search_iter": 2, "cv_folds": 2}
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(training, "test_address_parcels", lambda: [])  # those need the real file
+        # LightGBM's 8,000 rounds take minutes even on this small table
+        mp.setitem(training.LIGHTGBM_PARAM_DISTRIBUTIONS, "n_estimators", [200])
         train, test = training.split_with_aggregates(make_features().drop(columns=training.SALE_DERIVED_FEATURES), cfg)
-    return cfg, train, test, training.train_models(train, test, cfg)
+        results = training.train_models(train, test, cfg)
+    return cfg, train, test, results
 
 
 @pytest.fixture

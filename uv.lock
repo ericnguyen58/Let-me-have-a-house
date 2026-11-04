@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.14"
 resolution-markers = [
     "sys_platform == 'win32'",
@@ -878,11 +878,11 @@ wheels = [
 name = "let-me-have-a-house"
 version = "0.1.0"
 source = { virtual = "." }
-default-groups = ["dev", "notebooks"]
 dependencies = [
     { name = "anthropic" },
     { name = "fastapi" },
     { name = "geopandas" },
+    { name = "lightgbm" },
     { name = "numpy" },
     { name = "openpyxl" },
     { name = "overturemaps" },
@@ -901,9 +901,6 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
-lightgbm = [
-    { name = "lightgbm" },
-]
 notebooks = [
     { name = "ipykernel" },
     { name = "matplotlib" },
@@ -920,6 +917,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=1.8.0" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "geopandas", specifier = ">=1.1.4" },
+    { name = "lightgbm", specifier = ">=4.7.0" },
     { name = "numpy", specifier = ">=2.5.2" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "overturemaps", specifier = ">=1.0.2" },
@@ -938,7 +936,6 @@ dev = [
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "ruff", specifier = ">=0.17.3" },
 ]
-lightgbm = [{ name = "lightgbm", specifier = ">=4.7.0" }]
 notebooks = [
     { name = "ipykernel", specifier = ">=7.3.0" },
     { name = "matplotlib", specifier = ">=3.11.1" },
