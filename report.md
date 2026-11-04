@@ -1,6 +1,6 @@
 # What drives a house's assessed value
 
-Mecklenburg County, NC. Analyses run on 2026-10-06; section 4 on 2026-11-03.
+Mecklenburg County, NC. Analyses run on 2026-10-06; section 4 on 2026-11-03 and 2026-11-04.
 
 | Analysis | Source | Output |
 |---|---|---|
@@ -239,10 +239,13 @@ Each one screened up to 8 ideas on the test-split MAE of the assessed value, the
 nine-cutoff backtest of the market-value chain. A change would be accepted only if the mean MAE over the nine
 cutoffs fell by at least 2% and no cutoff rose by more than 5%. Every run is logged in `experiments/<branch>.jsonl`.
 
+On 2026-11-04 the two best candidates were run together, as one full run (`exp-combined`).
+
 **Leaderboard** (full runs):
 
 | Run | Change | Test MAE, assessed value | Mean MAE of 9 cutoffs, sale price | Worst cutoff | Accepted |
 |---|---|---|---|---|---|
+| Features + LightGBM (`exp-combined`, ed01815) | The two rows below together | $27,714 (−5.9%) | $60,757 (−1.95%) | −0.2% | No |
 | Features (`own-sale-out`, 0fc3f24) | Neighborhood price time-adjusted and without the house's own sale; when the neighborhood's sales were; size and age against its sold houses; lot per sq ft | $28,837 (−2.1%) | $61,250 (−1.2%) | +0.2% | No |
 | LightGBM (4b0e240) | 8,000 rounds at learning rate 0.025, 4,095 bins, 80% bagging | $28,283 (−3.9%) | $61,351 (−1.0%) | +0.2% | No |
 | Baseline, another seed | Production settings, `random_state` 7 | $29,770 (+1.1%) | $61,865 (−0.2%) | +1.7% | No |
@@ -262,10 +265,13 @@ cutoffs fell by at least 2% and no cutoff rose by more than 5%. Every run is log
 ### Findings
 
 1. **No change passed, so production stays as it is.**
-   - Both candidates are better at 8 of the 9 cutoffs.
-   - Their mean MAE gains of 1.0% and 1.2% are well above the seed noise (0.2%), but short of 2%.
+   - The two candidates are better at 8 of the 9 cutoffs. Their mean MAE gains of 1.0% and 1.2% are well above
+     the seed noise (0.2%), but short of 2%.
+   - Together they are better at all 9 cutoffs (−0.2% to −3.9%). Their gains nearly add up (−1.95% against
+     −2.1% summed), but miss 2% by 0.05 points. That is less than the seed noise, so another seed could land on
+     either side of the bar.
 2. **Gains in the model shrink on the way to the sale price.** LightGBM's −3.9% became −1.0%; the features'
-   −2.1% became −1.2%. Two likely reasons:
+   −2.1% became −1.2%; together, −5.9% became −1.95%. Two likely reasons:
    - The chain's MAE (about $62,000) is twice the model's (about $29,000). Most of it is how far sale prices land
      from a ratio-adjusted value, and a model of the assessed value can't change that.
    - The calibrated neighborhood ratio already removes the model's neighborhood-level bias.
@@ -278,7 +284,8 @@ cutoffs fell by at least 2% and no cutoff rose by more than 5%. Every run is log
    test MAE by 0.3%. That is within the noise, so it isn't confirmed.
 
 **Next steps:**
-- Run the features and LightGBM together. Their gains may partly add up; one full run takes about an hour.
+- Average the combined candidate over 3 seeds (about 3 hours) to tell whether its gain is above or below 2%.
+  Adopting it would also make LightGBM a main dependency, at 7.5 minutes per fit.
 - Test the own-sale fix for the current neighborhood price over several seeds.
 
 ## How we got there
