@@ -91,10 +91,3 @@ features:
     property_crime_rate: {missing: 0.3, range: [0, 10000]}
     in_floodplain: {values: [0, 1]}
     light_rail_miles: {range: [0, 40]}
-    neighborhood_adjusted_price_per_sqft: {missing: 0.02, range: [1, 5000]}
-    # years from the January 2023 assessment to the neighborhood's sales
-    neighborhood_sale_years: {missing: 0.02, range: [-15, 5]}
-    neighborhood_value_estimate: {missing: 0.02, range: [100, 1.0e+8]}
-    relative_heated_area: {missing: 0.02, range: [0, 100]}
-    relative_year_built: {missing: 0.02, range: [-400, 400]}
-    lot_sqft_per_heated_sqft: {missing: 0.01, range: [0, 1.0e+7]}

@@ -219,7 +219,7 @@ def lookup_property(address=None, parcel_id=None, limit=5):
 
     match = match.head(limit)
     others = df[~df["parcel_id"].isin(match["parcel_id"])]
-    match = add_sale_features(match.drop(columns=SALE_DERIVED_FEATURES, errors="ignore"), source=others)
+    match = add_sale_features(match.drop(columns=SALE_DERIVED_FEATURES), source=others)
     results = match[PROPERTY_DISPLAY_COLUMNS]
     return results.astype(object).where(results.notna(), None).to_dict(orient="records")
 

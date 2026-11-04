@@ -16,9 +16,9 @@ adding them to MODEL_TYPES (xgboost after `uv sync --group xgboost`).
 
 The split is random (80/20), not grouped by neighborhood: the use case is valuing a
 house in a neighborhood that already has sales, and with a neighborhood-grouped split
-every test house would be missing its neighborhood aggregates. Those aggregates,
-price_momentum and the other features from sales (SALE_DERIVED_FEATURES) are recomputed
-here from training rows only, so a test house's own sale never feeds its features.
+every test house would be missing its neighborhood aggregates. Those aggregates and
+price_momentum are recomputed here from training rows only, so a test house's own
+sale never feeds its features.
 
 `land_value`/`building_value` and sale-derived columns are dropped as target leakage
 (total_value is exactly land_value + building_value) or near-entirely missing.
@@ -62,20 +62,9 @@ from src.utils.load_config import load_config
 
 TARGET = "total_value"
 NEIGHBORHOOD_PRICE = "neighborhood_median_price_per_sqft"
-# Features built from sales - dropped from the feature file and recomputed from training
-# rows only, so a test house's own sale never feeds its features. lot_sqft_per_heated_sqft
-# is also built by add_sale_features, so a feature file from before it still works, but
-# from the house's own columns only.
-SALE_DERIVED_FEATURES = [
-    NEIGHBORHOOD_PRICE,
-    "neighborhood_sale_count",
-    "price_momentum",
-    "neighborhood_adjusted_price_per_sqft",
-    "neighborhood_sale_years",
-    "neighborhood_value_estimate",
-    "relative_heated_area",
-    "relative_year_built",
-]
+# Features built from sale prices - dropped from the feature file and recomputed from
+# training rows only, so a test house's own sale never feeds its features.
+SALE_DERIVED_FEATURES = [NEIGHBORHOOD_PRICE, "neighborhood_sale_count", "price_momentum"]
 
 CATEGORICAL_FEATURES = ["land_use_class", "area"]
 NUMERIC_FEATURES = [
@@ -104,12 +93,6 @@ NUMERIC_FEATURES = [
     "property_crime_rate",
     "in_floodplain",
     "light_rail_miles",
-    "neighborhood_adjusted_price_per_sqft",
-    "neighborhood_sale_years",
-    "neighborhood_value_estimate",
-    "relative_heated_area",
-    "relative_year_built",
-    "lot_sqft_per_heated_sqft",
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 FEATURE_SETS = {
@@ -126,12 +109,10 @@ SELECTION_METRIC = "mae"
 
 def load_training_data(features_path):
     """Rows with a positive target. The feature file's sale-derived features are
-    dropped - they were computed on every row, so split_with_aggregates recomputes them.
-    A file built before a feature was added doesn't have it, which is fine: it is computed
-    here too."""
+    dropped - they were computed on every row, so split_with_aggregates recomputes them."""
     df = read_dataframe(features_path, "properties_features.csv")
     df = df[df[TARGET].notna() & (df[TARGET] > 0)]
-    return df.drop(columns=SALE_DERIVED_FEATURES, errors="ignore")
+    return df.drop(columns=SALE_DERIVED_FEATURES)
 
 
 def test_address_parcels():

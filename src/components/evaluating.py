@@ -43,28 +43,8 @@ from src.utils.load_config import load_config
 
 # Every feature in exactly one group. Shared with notebooks/shap_explain.ipynb.
 FEATURE_GROUPS = {
-    "house": [
-        "land_use_class",
-        "acreage",
-        "year_built",
-        "property_age",
-        "heated_area",
-        "bedrooms",
-        "bathrooms",
-        "relative_heated_area",
-        "relative_year_built",
-        "lot_sqft_per_heated_sqft",
-    ],
-    "location": [
-        "area",
-        "latitude",
-        "longitude",
-        "neighborhood_sale_count",
-        "price_momentum",
-        "neighborhood_adjusted_price_per_sqft",
-        "neighborhood_sale_years",
-        "neighborhood_value_estimate",
-    ],
+    "house": ["land_use_class", "acreage", "year_built", "property_age", "heated_area", "bedrooms", "bathrooms"],
+    "location": ["area", "latitude", "longitude", "neighborhood_sale_count", "price_momentum"],
     "neighborhood_price": [NEIGHBORHOOD_PRICE],
     "accessibility": [
         "education_nearest_miles",
