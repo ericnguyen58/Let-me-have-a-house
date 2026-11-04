@@ -43,6 +43,7 @@ import pandas as pd
 from sklearn.neighbors import BallTree
 
 from src.utils.common import read_dataframe, resolve_path, save_dataframe
+from src.utils.data_checks import check
 from src.utils.load_config import load_config
 
 CURRENT_YEAR = datetime.now().year
@@ -364,11 +365,17 @@ def add_price_momentum(df, source=None):
     return out.drop(columns=["growth", "sales", "area_growth"])
 
 
+def add_sale_features(df, source=None):
+    """Every feature computed from sales (training.SALE_DERIVED_FEATURES), from `source`
+    rows (default: df itself). The one place they are built: the feature file, training.py's
+    split, the backtest's refits (market_estimate) and lookup_property all call this."""
+    return add_price_momentum(add_neighborhood_aggregates(df, source=source), source=source)
+
+
 def build_features(df, nc_places_df, raw_path):
     df = add_property_age(df)
     df = add_price_per_sqft(df)
-    df = add_neighborhood_aggregates(df)
-    df = add_price_momentum(df)
+    df = add_sale_features(df)
     df = add_accessibility(df, nc_places_df)
     df = add_location_context(df, raw_path)
     return df
@@ -384,6 +391,7 @@ def run():
     places = read_dataframe(processed_path, "nc_places_map.csv")
 
     features = build_features(clean, places, resolve_path(cfg, "raw_data"))
+    check(features, "features")  # config/schema.yaml; a failure leaves the last file in place
     save_dataframe(features, features_path, "properties_features.csv")
     return features
 
