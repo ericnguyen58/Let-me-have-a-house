@@ -60,6 +60,8 @@ MIN_MOMENTUM_SALES = 30
 # to its level and the timing of a neighborhood's sales is measured from it.
 ASSESSMENT_DATE = pd.Timestamp("2023-01-01")
 SQFT_PER_ACRE = 43560
+# Sales nearest each house that nearby_adjusted_price_per_sqft takes the median of
+NEARBY_SALES = 10
 
 # Health care and activity are counted within this radius; 5 miles still separates
 # dense and sparse parts of the county (e.g. ~620 activity places around Uptown vs ~70
@@ -406,6 +408,25 @@ def add_adjusted_aggregates(df, source=None):
     )
 
 
+def add_nearby_sales(df, source=None):
+    """nearby_adjusted_price_per_sqft: median adjusted price_per_sqft of the NEARBY_SALES
+    sales of `source` (default: df itself) nearest the house, leaving out the house's own
+    sale - with so few sales its own would weigh too much on its feature. Finer than the
+    neighborhood: a street on the lake or next to the highway can sell for very different
+    prices than the rest of its neighborhood. NaN for houses missing coordinates."""
+    sales = adjusted_sales(df if source is None else source).dropna(subset=["latitude", "longitude"])
+    houses = df[["latitude", "longitude"]].dropna()
+    tree = BallTree(np.radians(sales[["latitude", "longitude"]]), metric="haversine")
+    # one more than needed per copy of a parcel: the feature file lists some parcels twice
+    _, idx = tree.query(np.radians(houses), k=NEARBY_SALES + 2)
+    prices = sales["adjusted_price_per_sqft"].to_numpy()[idx]
+    own = sales["parcel_id"].to_numpy()[idx] == df.loc[houses.index, "parcel_id"].to_numpy()[:, None]
+    nearest = ~own & (np.cumsum(~own, axis=1) <= NEARBY_SALES)
+    median = np.nanmedian(np.where(nearest, prices, np.nan), axis=1)
+    df["nearby_adjusted_price_per_sqft"] = pd.Series(median, index=houses.index).reindex(df.index)
+    return df
+
+
 def add_interactions(df):
     """Products and ratios of two columns, which a tree can't build from splits on each
     one: the house's size at its neighborhood's adjusted price, its size and age against
@@ -422,7 +443,8 @@ def add_sale_features(df, source=None):
     rows (default: df itself). The one place they are built: the feature file, training.py's
     split, the backtest's refits (market_estimate) and lookup_property all call this."""
     df = add_price_momentum(add_neighborhood_aggregates(df, source=source), source=source)
-    return add_interactions(add_adjusted_aggregates(df, source=source))
+    df = add_interactions(add_adjusted_aggregates(df, source=source))
+    return add_nearby_sales(df, source=source)
 
 
 def build_features(df, nc_places_df, raw_path):

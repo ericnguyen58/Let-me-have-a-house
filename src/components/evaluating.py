@@ -64,6 +64,7 @@ FEATURE_GROUPS = {
         "neighborhood_adjusted_price_per_sqft",
         "neighborhood_sale_years",
         "neighborhood_value_estimate",
+        "nearby_adjusted_price_per_sqft",
     ],
     "neighborhood_price": [NEIGHBORHOOD_PRICE],
     "accessibility": [
