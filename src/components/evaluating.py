@@ -52,6 +52,7 @@ FEATURE_GROUPS = {
         "bedrooms",
         "bathrooms",
         "relative_heated_area",
+        "relative_year_built",
         "lot_sqft_per_heated_sqft",
     ],
     "location": [
@@ -61,6 +62,7 @@ FEATURE_GROUPS = {
         "neighborhood_sale_count",
         "price_momentum",
         "neighborhood_adjusted_price_per_sqft",
+        "neighborhood_sale_years",
         "neighborhood_value_estimate",
     ],
     "neighborhood_price": [NEIGHBORHOOD_PRICE],

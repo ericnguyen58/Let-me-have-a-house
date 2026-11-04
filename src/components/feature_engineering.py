@@ -30,8 +30,15 @@ January 2023 assessment the target comes from), falling back to the house's area
 where the neighborhood has too few sales - a measure of where buyers expected
 prices to go, as far as recorded sales show it.
 
-The neighborhood aggregates and price_momentum here are computed on every row;
-training.py recomputes both from its training rows only.
+neighborhood_adjusted_price_per_sqft is the neighborhood's price with each sale moved
+to the county's level in the year before the assessment, and neighborhood_sale_years
+is how long before or after the assessment its sales were (see add_adjusted_aggregates;
+both leave out the house's own sale). add_interactions combines them with the house:
+its size at that price, its size and age against the neighborhood's typical sold
+house, and its lot per square foot of house.
+
+The features from sales (add_sale_features) are computed on every row here;
+training.py recomputes them from its training rows only.
 """
 
 import re
@@ -429,8 +436,9 @@ def add_interactions(df):
 
 def add_sale_features(df, source=None):
     """Every feature computed from sales (training.SALE_DERIVED_FEATURES), from `source`
-    rows (default: df itself). The one place they are built: the feature file, training.py's
-    split, the backtest's refits (market_estimate) and lookup_property all call this."""
+    rows (default: df itself), plus add_interactions' lot ratio. The one place they are
+    built: the feature file, training.py's split, the backtest's refits (market_estimate)
+    and lookup_property all call this."""
     df = add_price_momentum(add_neighborhood_aggregates(df, source=source), source=source)
     return add_interactions(add_adjusted_aggregates(df, source=source))
 
