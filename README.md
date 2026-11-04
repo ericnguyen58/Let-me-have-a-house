@@ -251,6 +251,8 @@ uv run python -m src.components.market_estimate calibrate    # out-of-fold model
 uv run python -m src.components.market_estimate houses       # market_value for the test houses, two per path
 uv run python -m src.components.market_estimate chain        # backtest the model chain at one cutoff (about 3 minutes)
 uv run python -m src.components.market_estimate chain-multi  # the same at 9 quarterly cutoffs (about 26 minutes)
+uv run python -m experiments.backtest run NAME --spec JSON   # score a model change against experiments/baseline.json (report.md section 4)
+uv run python -m experiments.backtest compare                # the leaderboard of every logged experiment
 ```
 
 Each stage reads its inputs from the previous stage's output files, so they
@@ -1680,7 +1682,9 @@ notebooks/        exploration notebooks; shap_explain.ipynb explains the model s
 output/models/    runs/<run_id>/: each training run; production.json names the one in use
 reports/          training metrics, chosen hyperparameters, house validation, drop-column
                   and same-house-by-area results
-report.md         the research write-up: SHAP, drop-column test, same house by area
+report.md         the research write-up: SHAP, drop-column test, same house by area, model experiments
+experiments/      backtest.py: scores a model change the same way every time; baseline.json
+                  and one log per branch (<branch>.jsonl)
 test/             pytest suite; conftest.py builds the synthetic feature table
 Dockerfile        image of the chat API (data and models are mounted)
 .github/          CI/CD workflow (workflows/ci.yml) and Dependabot settings

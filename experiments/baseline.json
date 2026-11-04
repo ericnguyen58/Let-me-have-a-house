@@ -1,0 +1,72 @@
+{
+  "name": "baseline",
+  "branch": "model-experiments",
+  "commit": "92f7b0c",
+  "dirty": false,
+  "started": "2026-11-03T21:35:39",
+  "threads": "3",
+  "note": null,
+  "spec": {
+    "model": "hist_gradient_boosting",
+    "params": {
+      "min_samples_leaf": 10,
+      "max_leaf_nodes": 255,
+      "max_features": 0.5,
+      "learning_rate": 0.05,
+      "l2_regularization": 0.1
+    },
+    "feature_set": "with_neighborhood_price"
+  },
+  "test_mae": 29438.719755426642,
+  "test_mape": 0.05041431402529626,
+  "mean_mae": 61965.18147739583,
+  "cutoffs": {
+    "2024-04-01": {
+      "mae": 62021.00354184126,
+      "median_pct_error": 0.0646953077198086,
+      "sales": 3757
+    },
+    "2024-07-01": {
+      "mae": 53367.96649903549,
+      "median_pct_error": 0.059146644484509694,
+      "sales": 3520
+    },
+    "2024-10-01": {
+      "mae": 54269.707643972935,
+      "median_pct_error": 0.059077413701902726,
+      "sales": 3209
+    },
+    "2025-01-01": {
+      "mae": 55371.5816883278,
+      "median_pct_error": 0.05670338192051126,
+      "sales": 2884
+    },
+    "2025-04-01": {
+      "mae": 64337.63772830114,
+      "median_pct_error": 0.06587057608912736,
+      "sales": 4028
+    },
+    "2025-07-01": {
+      "mae": 62667.61857933214,
+      "median_pct_error": 0.0699849543677165,
+      "sales": 3620
+    },
+    "2025-10-01": {
+      "mae": 69804.39664264445,
+      "median_pct_error": 0.07495194636289192,
+      "sales": 3243
+    },
+    "2026-01-01": {
+      "mae": 63251.91259120409,
+      "median_pct_error": 0.07081566005245377,
+      "sales": 2712
+    },
+    "2026-04-01": {
+      "mae": 72594.8083819032,
+      "median_pct_error": 0.07180042121960978,
+      "sales": 4383
+    }
+  },
+  "seconds": 1154,
+  "verdict": null
+}
