@@ -60,8 +60,6 @@ MIN_MOMENTUM_SALES = 30
 # to its level and the timing of a neighborhood's sales is measured from it.
 ASSESSMENT_DATE = pd.Timestamp("2023-01-01")
 SQFT_PER_ACRE = 43560
-# A sale this many years from ASSESSMENT_DATE weighs 1/e of one on it in the neighborhood price
-RECENCY_YEARS = 3
 
 # Health care and activity are counted within this radius; 5 miles still separates
 # dense and sparse parts of the county (e.g. ~620 activity places around Uptown vs ~70
@@ -389,33 +387,33 @@ def adjusted_sales(source):
 
 def add_adjusted_aggregates(df, source=None):
     """Neighborhood aggregates of adjusted_sales(source) (default: df itself) that leave
-    out the house's own sale: the adjusted price_per_sqft as a geometric mean weighted
-    toward sales near ASSESSMENT_DATE (the further a price is moved, the less it says),
-    and the mean years from ASSESSMENT_DATE to the neighborhood's sales. Means rather
-    than medians so the own sale can be taken out; with it in, a training house in a
-    neighborhood of few sales sees mostly its own price, which a test house never does.
-    Also the neighborhood's typical sold house, for add_interactions."""
+    out the house's own sale: the geometric mean adjusted price_per_sqft and the mean
+    years from ASSESSMENT_DATE to the neighborhood's sales. Means rather than medians so
+    the own sale can be taken out; with it in, a training house in a neighborhood of few
+    sales sees mostly its own price, which a test house never does. Also the
+    neighborhood's typical sold house, for add_interactions."""
     sales = adjusted_sales(df if source is None else source)
-    sales["sales"] = 1
-    sales["weight"] = np.exp(-sales["sale_years"].abs() / RECENCY_YEARS)
-    sales["weighted_log_price"] = sales["weight"] * np.log(sales["adjusted_price_per_sqft"])
-    summed = ["sales", "weight", "weighted_log_price", "sale_years"]
+    sales["log_price"] = np.log(sales["adjusted_price_per_sqft"])
     keys = ["county", "neighborhood_code"]
     nbhd = sales.groupby(keys).agg(
+        sales=("log_price", "size"),
+        log_price=("log_price", "sum"),
+        sale_years=("sale_years", "sum"),
         neighborhood_heated_area=("heated_area", "median"),
         neighborhood_year_built=("year_built", "median"),
     )
-    out = df.merge(nbhd.join(sales.groupby(keys)[summed].sum()).reset_index(), on=keys, how="left")
     # the feature file lists some parcels twice, so a parcel can have two sales here
-    own = sales.groupby(keys + ["parcel_id"])[summed].sum().reset_index()
-    own = df[keys + ["parcel_id"]].merge(own, on=keys + ["parcel_id"], how="left")[summed].fillna(0)
-    others = out[summed] - own.to_numpy()
-    others["sales"] = others["sales"].where(others["sales"] > 0)
-    out["neighborhood_adjusted_price_per_sqft"] = np.exp(others["weighted_log_price"] / others["weight"]).where(
-        others["sales"].notna()
+    own = sales.groupby(keys + ["parcel_id"]).agg(
+        own_sales=("log_price", "size"), own_log_price=("log_price", "sum"), own_sale_years=("sale_years", "sum")
     )
-    out["neighborhood_sale_years"] = others["sale_years"] / others["sales"]
-    return out.drop(columns=summed)
+    out = df.merge(nbhd.reset_index(), on=keys, how="left").merge(
+        own.reset_index(), on=keys + ["parcel_id"], how="left"
+    )
+    others = out["sales"] - out["own_sales"].fillna(0)
+    others = others.where(others > 0)
+    out["neighborhood_adjusted_price_per_sqft"] = np.exp((out["log_price"] - out["own_log_price"].fillna(0)) / others)
+    out["neighborhood_sale_years"] = (out["sale_years"] - out["own_sale_years"].fillna(0)) / others
+    return out.drop(columns=["sales", "log_price", "sale_years", "own_sales", "own_log_price", "own_sale_years"])
 
 
 def add_interactions(df):

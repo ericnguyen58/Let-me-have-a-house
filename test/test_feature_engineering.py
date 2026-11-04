@@ -49,13 +49,27 @@ def test_adjusted_price_moves_old_sales_to_the_level_before_the_assessment():
             {**sale, "neighborhood_code": "new", "sale_date": "2022-11-01", "price_per_sqft": 200},
             {**sale, "neighborhood_code": "new", "sale_date": "2022-12-01", "price_per_sqft": np.nan},
         ]
-    )
-    test = pd.DataFrame([{**sale, "neighborhood_code": n, "price_per_sqft": 10_000} for n in ["old", "cheap", "new"]])
+    ).assign(parcel_id=[1.0, 2, 3, 4, 5])
+    test = pd.DataFrame([{**sale, "neighborhood_code": n, "parcel_id": 9.0} for n in ["old", "cheap", "new"]])
     out = add_adjusted_aggregates(test, source=train).set_index("neighborhood_code")
-    assert out["neighborhood_adjusted_price_per_sqft"].to_dict() == pytest.approx({"old": 200, "cheap": 100, "new": 200})
+    assert out["neighborhood_adjusted_price_per_sqft"].to_dict() == pytest.approx(
+        {"old": 200, "cheap": 100, "new": 200}
+    )
     assert out.loc["old", "neighborhood_sale_years"] == pytest.approx(-6.9, abs=0.05)
     assert out.loc["new", "neighborhood_sale_years"] == pytest.approx(-0.17, abs=0.01)
-    assert out["area_sale_count"].tolist() == [4, 4, 4]  # sales with a price only
+
+
+def test_adjusted_aggregates_leave_out_the_houses_own_sale():
+    sale = {"county": "M", "area": "A", "neighborhood_code": "n1", "heated_area": 2000, "year_built": 2000}
+    train = pd.DataFrame(
+        [
+            {**sale, "parcel_id": 1.0, "sale_date": "2022-06-01", "price_per_sqft": 100},
+            {**sale, "parcel_id": 2.0, "sale_date": "2022-06-01", "price_per_sqft": 400},
+            {**sale, "parcel_id": 3.0, "sale_date": "2022-06-01", "price_per_sqft": np.nan},
+        ]
+    )
+    out = add_adjusted_aggregates(train).set_index("parcel_id")
+    assert out["neighborhood_adjusted_price_per_sqft"].to_dict() == pytest.approx({1: 400, 2: 100, 3: 200})
 
 
 def test_interactions_compare_the_house_with_its_neighborhoods_sold_houses():

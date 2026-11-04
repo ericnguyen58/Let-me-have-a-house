@@ -70,8 +70,6 @@ SALE_DERIVED_FEATURES = [
     "price_momentum",
     "neighborhood_adjusted_price_per_sqft",
     "neighborhood_sale_years",
-    "area_adjusted_price_per_sqft",
-    "area_sale_count",
     "neighborhood_value_estimate",
     "relative_heated_area",
     "relative_year_built",
@@ -105,10 +103,8 @@ NUMERIC_FEATURES = [
     "in_floodplain",
     "light_rail_miles",
     "neighborhood_adjusted_price_per_sqft",
-    "neighborhood_sale_years",
     "neighborhood_value_estimate",
     "relative_heated_area",
-    "relative_year_built",
     "lot_sqft_per_heated_sqft",
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
