@@ -73,14 +73,20 @@ as described below.
 | Pipeline orchestration | `src/pipeline/run.py` | Implemented: runs the stages in order, skipping those that are up to date |
 | Chat UI v1.0 | `api/main.py`, `api/static/index.html` | Implemented: a web page for the assistant |
 | Docker | `Dockerfile` | Implemented: an image of the chat API |
-| Tests | `test/` | Implemented: 105 tests, 7 of them on the local data |
+| Tests | `test/` | Implemented: 110 tests, 7 of them on the local data |
 | CI/CD | `.github/workflows/ci.yml` | Implemented: lint, format check and tests on every push and pull request; the Docker image is pushed to GitHub's registry from `main` |
 
 ## Current models
 
-Only histogram gradient boosting (scikit-learn's
-`HistGradientBoostingRegressor`) is in use for now (`training.MODEL_TYPES`).
-Models are chosen by MAE in dollars: the aim is a smaller typical miss, even
+Two model types are in use (`training.MODEL_TYPES`): LightGBM, which
+estimates come from (`predict.DEFAULT_MODEL_NAME`), and histogram gradient
+boosting (scikit-learn's `HistGradientBoostingRegressor`), which the analyses
+in `evaluating.py` are built on. LightGBM's settings are fixed at the ones
+adopted in the model experiments (report.md section 4); with the features
+added then, they lowered the market estimate's backtest MAE by 1.8% and test
+MAE by 5.8%. The table below is still the gradient boosting production run:
+LightGBM's models come with the next training run (report.md section 4 lists
+the steps). Models are chosen by MAE in dollars: the aim is a smaller typical miss, even
 if RMSE or R squared had to give a little. In a comparison on a validation
 split carved from the training rows, gradient boosting beat the tuned random
 forest on every metric anyway (MAE $29,407 against $33,066), and its model
@@ -97,7 +103,7 @@ the county marked "Qualified".
 
 | Model | Test set (about 61,000 houses) |
 |---|---|
-| `with_neighborhood_price_hist_gradient_boosting` (default) | RMSE $80,283, MAE $29,439, R squared 0.956, average error 5.04% |
+| `with_neighborhood_price_hist_gradient_boosting` (default until the next training run) | RMSE $80,283, MAE $29,439, R squared 0.956, average error 5.04% |
 | `without_neighborhood_price_hist_gradient_boosting` | RMSE $83,464, MAE $29,969, R squared 0.953, average error 5.12% |
 | `*_random_forest` (in `output/models/`, from before runs were kept) | Previous models, not used, scored on the earlier test split (see below). RMSE $86,183, MAE $32,826, R squared 0.950, average error 5.71% (default feature set); $88,283, $34,435, 0.948, 6.00% (without neighborhood price). Their metrics and settings are kept in `reports/random_forest_run/`. |
 | `*_xgboost` (in `output/models/`) | Not used, and no longer fit the current preprocessors. |
@@ -170,7 +176,7 @@ feature_engineering.py
         |
         v
 training.py
-  2 feature sets x gradient boosting -> output/models/runs/<run_id>/ (models, metrics, run.json)
+  2 feature sets x (gradient boosting, LightGBM) -> output/models/runs/<run_id>/ (models, metrics, run.json)
   check against production           -> if no worse: output/models/production.json,
                                         reports/training_metrics.csv,
                                         reports/best_hyperparameters.json
@@ -258,8 +264,10 @@ uv run python -m experiments.backtest compare                # the leaderboard o
 
 Each stage reads its inputs from the previous stage's output files, so they
 must be run in order the first time. Preprocessing and feature engineering
-each take about 20 seconds. Training takes much longer (about 20 minutes), because it runs a
+each take about 20 seconds. Training takes much longer (about 20 minutes before LightGBM), because it runs a
 hyperparameter search for 2 gradient boosting models on about 304,000 houses.
+LightGBM adds 4 fits per feature set (3 CV folds and the refit) of about 7.5
+minutes each on 3 threads.
 `finetune.py`, which retrains one model with known settings, takes about 2.5
 minutes.
 
@@ -645,8 +653,10 @@ Trains models that estimate `total_value` (the 2023 assessed value).
 | `with_neighborhood_price` | The best estimate. Includes `neighborhood_median_price_per_sqft`. |
 | `without_neighborhood_price` | The same features without that column. The neighborhood price already contains most of the effect of location, amenities and area, so this is the model to read when asking what `area` and the accessibility features are worth. |
 
-Each set is trained with every model type in `MODEL_TYPES`. That is only
-`hist_gradient_boosting` for now, so 2 models are trained.
+Each set is trained with every model type in `MODEL_TYPES`:
+`hist_gradient_boosting` and `lightgbm`, so 4 models are trained. LightGBM's
+settings (`LIGHTGBM_PARAM_DISTRIBUTIONS`) are a single candidate, the one
+adopted in the model experiments, so its search only scores it.
 `build_search_estimators` also defines random forest and XGBoost, which come
 back by adding `"random_forest"` or `"xgboost"` to `MODEL_TYPES`. It builds only
 the types asked for, and imports XGBoost only then: XGBoost is an optional
@@ -709,8 +719,9 @@ sales. Their neighborhood price is filled with the median.
   model, and if it does, copies its two reports to `reports/`.
 
 Models trained before `price_momentum` was added still load, but they ignore
-the column. Retrain to use it. Each gradient boosting file is 45 to 70 MB;
-the old random forest files are about 1.1 GB each.
+the column. Retrain to use it. Each gradient boosting file is 45 to 70 MB,
+each LightGBM file about 210 MB; the old random forest files are about 1.1 GB
+each.
 
 ### `model_registry.py`
 
@@ -798,7 +809,7 @@ light_rail. The drop-column test, the same-house test and
 
 **Drop-column test (implemented, one split).**
 `drop_column_test(feature_set)`:
-- Retrains the production gradient boosting model (settings from
+- Retrains the production gradient boosting model, which these analyses stay on (settings from
   `reports/best_hyperparameters.json`, early stopping as in training)
   without one group at a time, and without `area`, `places_count` and
   `health_care_share` alone. Each is scored on the full test set.
@@ -887,7 +898,7 @@ validates it. Use it after adding a feature, instead of a full training run.
 
 Estimates `total_value` for one house.
 
-- `predict_total_value(features, feature_set="with_neighborhood_price", model_name="hist_gradient_boosting")`:
+- `predict_total_value(features, feature_set="with_neighborhood_price", model_name="lightgbm")`:
   `features` is a dictionary of feature names to values. It returns the
   estimate in dollars.
 - Any feature not given is filled the same way as in training (median or most
@@ -897,8 +908,8 @@ Estimates `total_value` for one house.
 - `feature_set` chooses between the two trained feature sets.
   `with_neighborhood_price` is the default, because it is the one meant for
   estimates. An unknown name raises `ValueError`.
-- `model_name` must be a type in `training.MODEL_TYPES` (only
-  `hist_gradient_boosting` for now); anything else raises `ValueError`.
+- `model_name` must be a type in `training.MODEL_TYPES` (`lightgbm`, the
+  default, or `hist_gradient_boosting`); anything else raises `ValueError`.
 - `load_model(feature_set, model_name)` returns the preprocessor and model.
   `load_artifact` caches loaded files, so repeated calls do not reload from
   disk. `search.py` uses the same cache.
@@ -978,7 +989,7 @@ Mecklenburg.
     priced low: houses on Kistler Farm Rd in Davidson came out at 6,700 sq ft
     for $462k. About 0.6% of houses are left out. There is no
     price-per-sq-ft sort for the same reason.
-- `find_deals(model_name="hist_gradient_boosting", feature_set="with_neighborhood_price", top_n=10, min_sale_price=10000, area=None)`:
+- `find_deals(model_name="lightgbm", feature_set="with_neighborhood_price", top_n=10, min_sale_price=10000, area=None)`:
   despite the name, this does not find houses for sale. It finds past
   arms-length sales that were well below the model's estimate, ranked by
   `deal_score = (predicted_value - sale_price) / predicted_value`. `area`
@@ -1706,7 +1717,8 @@ docker run --rm -p 8000:8000 \
 `OLLAMA_URL` points the assistant at Ollama on the host; for Claude, pass
 `-e ASSISTANT_MODEL=... -e ANTHROPIC_API_KEY=...` instead (`.env` isn't
 copied into the image). The health check requests `/`. The image is about
-1.2 GB; XGBoost, which isn't in use, is left out.
+1.2 GB; it includes LightGBM and the OpenMP runtime its wheel needs
+(`libgomp1`), and leaves out XGBoost, which isn't in use.
 
 ## Known issues
 

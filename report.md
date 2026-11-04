@@ -241,15 +241,18 @@ cutoffs fell by at least 2% and no cutoff rose by more than 5%. Every run is log
 
 On 2026-11-04 the two best candidates were run together (`exp-combined`), at 3 seeds (`random_state` 42, 7
 and 2026). Before the runs, the verdict was set as the rule applied to each cutoff's MAE averaged over the 3 seeds.
+It fell short, and the owner then adopted it anyway, at seed 42 (production's `random_state`): see
+[Adopted](#adopted-the-features-and-lightgbm-together).
 
 **Leaderboard** (full runs):
 
 | Run | Change | Test MAE, assessed value | Mean MAE of 9 cutoffs, sale price | Worst cutoff | Accepted |
 |---|---|---|---|---|---|
-| Features + LightGBM, mean of 3 seeds (`exp-combined`, ed01815) | The two rows below together | $27,736 (−5.8%) | $60,860 (−1.8%) | −0.05% | No |
-| Features + LightGBM, seed 42 only | | $27,714 (−5.9%) | $60,757 (−1.95%) | −0.2% | No |
-| Features (`own-sale-out`, 0fc3f24) | Neighborhood price time-adjusted and without the house's own sale; when the neighborhood's sales were; size and age against its sold houses; lot per sq ft | $28,837 (−2.1%) | $61,250 (−1.2%) | +0.2% | No |
-| LightGBM (4b0e240) | 8,000 rounds at learning rate 0.025, 4,095 bins, 80% bagging | $28,283 (−3.9%) | $61,351 (−1.0%) | +0.2% | No |
+| Features + LightGBM, mean of 3 seeds (`exp-combined`, a5c0562) | The two rows below together | $27,736 (−5.8%) | $60,860 (−1.8%) | −0.05% | No |
+| Features + LightGBM, seed 42 only | | $27,714 (−5.9%) | $60,757 (−1.95%) | −0.2% | No; adopted by the owner |
+| Features + LightGBM, seed 42, rerun after the merge (`adopt-combined-model`, 2e6f540) | The served settings; the same result to the dollar, at every cutoff | $27,714 (−5.9%) | $60,757 (−1.95%) | −0.2% | No; adopted by the owner |
+| Features (`own-sale-out`, ea51130) | Neighborhood price time-adjusted and without the house's own sale; when the neighborhood's sales were; size and age against its sold houses; lot per sq ft | $28,837 (−2.1%) | $61,250 (−1.2%) | +0.2% | No |
+| LightGBM (109b6a4) | 8,000 rounds at learning rate 0.025, 4,095 bins, 80% bagging | $28,283 (−3.9%) | $61,351 (−1.0%) | +0.2% | No |
 | Baseline, seed 7 | Production settings, `random_state` 7 | $29,770 (+1.1%) | $61,865 (−0.2%) | +1.7% | No |
 | Baseline, seed 2026 | Production settings, `random_state` 2026 | $29,509 (+0.2%) | $61,804 (−0.3%) | +1.2% | No |
 | Baseline | Production model (run 2026-11-01_155733) | $29,439 | $61,965 | | |
@@ -267,7 +270,7 @@ and 2026). Before the runs, the verdict was set as the rule applied to each cuto
 
 ### Findings
 
-1. **No change passed, so production stays as it is.**
+1. **No change passed the 2% rule.**
    - The two candidates are better at 8 of the 9 cutoffs. Their mean MAE gains of 1.0% and 1.2% are well above
      the seed noise (0.2–0.3%), but short of 2%.
    - Together they are better at all 9 cutoffs, but by 1.8% on average over 3 seeds (−1.95%, −1.73% and −1.68%).
@@ -286,9 +289,48 @@ and 2026). Before the runs, the verdict was set as the rule applied to each cuto
    `neighborhood_median_price_per_sqft` too. Leaving the own sale out of the new features' training rows moved
    test MAE by 0.3%. That is within the noise, so it isn't confirmed.
 
+### Adopted: the features and LightGBM together
+
+The owner adopted the combined candidate below the 2% bar. Its expected gain is the 3-seed mean, 1.8% on the
+backtest (−1.65% against the baseline at the same seeds), not the 1.95% of its first run. It is better at every
+cutoff, and its test MAE is 5.8% lower.
+
+**Why it works.** The two halves fix different things, so their gains nearly add up (−1.2% and −1.0% apart,
+−1.8% together):
+- **The features give the model better information.**
+  - The neighborhood price is time-adjusted to the January 2023 assessment, which puts sales from different
+    years on one footing.
+  - Size and age against the neighborhood's sold houses tell the model where a house sits within its
+    neighborhood.
+  - In the screens, time-adjusting was worth 0.8% of test MAE, and the comparisons with the neighborhood 1.7%
+    together.
+- **LightGBM fits them more finely.**
+  - 4,095 bins against scikit-learn's maximum of 255 let splits follow size and price closely (−0.8%).
+  - Most of the rest came from 8,000 small steps (learning rate 0.025, against 0.05 with early stopping), with
+    80% bagging.
+
+**What changed in production code:**
+- `training.MODEL_TYPES` is now gradient boosting and LightGBM.
+  - LightGBM's settings are fixed at the accepted ones, so its search runs that one candidate.
+  - Gradient boosting stays because `evaluating.py`'s analyses (sections 1 to 3) are built on it.
+- `predict.DEFAULT_MODEL_NAME` is `lightgbm`, so estimates, `find_deals` and the API use it.
+- `lightgbm` is a main dependency, and the Docker image adds the OpenMP runtime (`libgomp1`) its wheel needs.
+
+**Costs:**
+- One LightGBM fit takes about 7.5 minutes on 3 threads. Training adds 4 fits per feature set (3 CV folds and the
+  refit), and `market_estimate calibrate` refits it 5 times.
+- The nine-cutoff backtest took 69 minutes, against 19 for gradient boosting.
+- Each LightGBM model file is 209 MB, against 60 to 67 MB for gradient boosting, so every saved run grows by about
+  420 MB. It loads in 0.3 seconds and estimates a house in 3 ms.
+
+**To put it in production, in this order:**
+1. `uv run python -m src.components.feature_engineering`. The feature table needs the 6 new columns; its data
+   checks fail until then.
+2. `uv run python -m src.components.training`. The run is promoted if it is no worse than production.
+3. `uv run python -m src.components.market_estimate calibrate`, so the neighborhood ratios match the new model.
+4. Then deploy the new image. The current production run has no LightGBM model, so estimates fail until step 2.
+
 **Next steps:**
-- The combined candidate is better at every cutoff, by about 1.7% overall. Adopting it would take a lower bar than 2%,
-  and would make LightGBM a main dependency, at 7.5 minutes per fit.
 - Larger gains are more likely to come from the chain's ratio step, where most of its error is, than from the model.
 - Test the own-sale fix for the current neighborhood price over several seeds.
 
