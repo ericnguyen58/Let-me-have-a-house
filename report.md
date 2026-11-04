@@ -239,16 +239,19 @@ Each one screened up to 8 ideas on the test-split MAE of the assessed value, the
 nine-cutoff backtest of the market-value chain. A change would be accepted only if the mean MAE over the nine
 cutoffs fell by at least 2% and no cutoff rose by more than 5%. Every run is logged in `experiments/<branch>.jsonl`.
 
-On 2026-11-04 the two best candidates were run together, as one full run (`exp-combined`).
+On 2026-11-04 the two best candidates were run together (`exp-combined`), at 3 seeds (`random_state` 42, 7
+and 2026). Before the runs, the verdict was set as the rule applied to each cutoff's MAE averaged over the 3 seeds.
 
 **Leaderboard** (full runs):
 
 | Run | Change | Test MAE, assessed value | Mean MAE of 9 cutoffs, sale price | Worst cutoff | Accepted |
 |---|---|---|---|---|---|
-| Features + LightGBM (`exp-combined`, ed01815) | The two rows below together | $27,714 (−5.9%) | $60,757 (−1.95%) | −0.2% | No |
+| Features + LightGBM, mean of 3 seeds (`exp-combined`, ed01815) | The two rows below together | $27,736 (−5.8%) | $60,860 (−1.8%) | −0.05% | No |
+| Features + LightGBM, seed 42 only | | $27,714 (−5.9%) | $60,757 (−1.95%) | −0.2% | No |
 | Features (`own-sale-out`, 0fc3f24) | Neighborhood price time-adjusted and without the house's own sale; when the neighborhood's sales were; size and age against its sold houses; lot per sq ft | $28,837 (−2.1%) | $61,250 (−1.2%) | +0.2% | No |
 | LightGBM (4b0e240) | 8,000 rounds at learning rate 0.025, 4,095 bins, 80% bagging | $28,283 (−3.9%) | $61,351 (−1.0%) | +0.2% | No |
-| Baseline, another seed | Production settings, `random_state` 7 | $29,770 (+1.1%) | $61,865 (−0.2%) | +1.7% | No |
+| Baseline, seed 7 | Production settings, `random_state` 7 | $29,770 (+1.1%) | $61,865 (−0.2%) | +1.7% | No |
+| Baseline, seed 2026 | Production settings, `random_state` 2026 | $29,509 (+0.2%) | $61,804 (−0.3%) | +1.2% | No |
 | Baseline | Production model (run 2026-11-01_155733) | $29,439 | $61,965 | | |
 
 **Screens** (test MAE against the baseline's):
@@ -266,26 +269,27 @@ On 2026-11-04 the two best candidates were run together, as one full run (`exp-c
 
 1. **No change passed, so production stays as it is.**
    - The two candidates are better at 8 of the 9 cutoffs. Their mean MAE gains of 1.0% and 1.2% are well above
-     the seed noise (0.2%), but short of 2%.
-   - Together they are better at all 9 cutoffs (−0.2% to −3.9%). Their gains nearly add up (−1.95% against
-     −2.1% summed), but miss 2% by 0.05 points. That is less than the seed noise, so another seed could land on
-     either side of the bar.
+     the seed noise (0.2–0.3%), but short of 2%.
+   - Together they are better at all 9 cutoffs, but by 1.8% on average over 3 seeds (−1.95%, −1.73% and −1.68%).
+     The first run, which nearly passed, was the luckiest. Against the baseline averaged over the same seeds, the
+     gain is 1.65%.
 2. **Gains in the model shrink on the way to the sale price.** LightGBM's −3.9% became −1.0%; the features'
-   −2.1% became −1.2%; together, −5.9% became −1.95%. Two likely reasons:
+   −2.1% became −1.2%; together, −5.8% became −1.8%. Two likely reasons:
    - The chain's MAE (about $62,000) is twice the model's (about $29,000). Most of it is how far sale prices land
      from a ratio-adjusted value, and a model of the assessed value can't change that.
    - The calibrated neighborhood ratio already removes the model's neighborhood-level bias.
-3. **The screens can't tell apart ideas within about 1%.** With another seed:
-   - test MAE moved by 1.1%
+3. **The screens can't tell apart ideas within about 1%.** With two other seeds, the baseline's:
+   - test MAE moved by up to 1.1%
    - single cutoffs moved by up to 1.8%
-   - the nine-cutoff mean moved by only 0.2%
+   - the nine-cutoff mean moved by only 0.2–0.3%
 4. **Training rows' neighborhood price includes their own sale; test rows' doesn't.** This is true of the current
    `neighborhood_median_price_per_sqft` too. Leaving the own sale out of the new features' training rows moved
    test MAE by 0.3%. That is within the noise, so it isn't confirmed.
 
 **Next steps:**
-- Average the combined candidate over 3 seeds (about 3 hours) to tell whether its gain is above or below 2%.
-  Adopting it would also make LightGBM a main dependency, at 7.5 minutes per fit.
+- The combined candidate is better at every cutoff, by about 1.7% overall. Adopting it would take a lower bar than 2%,
+  and would make LightGBM a main dependency, at 7.5 minutes per fit.
+- Larger gains are more likely to come from the chain's ratio step, where most of its error is, than from the model.
 - Test the own-sale fix for the current neighborhood price over several seeds.
 
 ## How we got there
