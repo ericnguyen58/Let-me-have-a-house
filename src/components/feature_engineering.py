@@ -365,11 +365,17 @@ def add_price_momentum(df, source=None):
     return out.drop(columns=["growth", "sales", "area_growth"])
 
 
+def add_sale_features(df, source=None):
+    """Every feature computed from sales (training.SALE_DERIVED_FEATURES), from `source`
+    rows (default: df itself). The one place they are built: the feature file, training.py's
+    split, the backtest's refits (market_estimate) and lookup_property all call this."""
+    return add_price_momentum(add_neighborhood_aggregates(df, source=source), source=source)
+
+
 def build_features(df, nc_places_df, raw_path):
     df = add_property_age(df)
     df = add_price_per_sqft(df)
-    df = add_neighborhood_aggregates(df)
-    df = add_price_momentum(df)
+    df = add_sale_features(df)
     df = add_accessibility(df, nc_places_df)
     df = add_location_context(df, raw_path)
     return df

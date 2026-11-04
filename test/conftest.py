@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from src.components import search
-from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
+from src.components.feature_engineering import add_sale_features
 from src.components.training import NUMERIC_FEATURES
 from src.utils.common import resolve_path
 from src.utils.load_config import load_config
@@ -85,7 +85,7 @@ def make_features(n=600, seed=0):
             df[column] = rng.uniform(0, 10, n)
     df["price_per_sqft"] = df["sale_price"] / df["heated_area"]
     # the real file carries the sale-derived features computed on every row
-    return add_price_momentum(add_neighborhood_aggregates(df.drop(columns="price_momentum")))
+    return add_sale_features(df.drop(columns="price_momentum"))
 
 
 @pytest.fixture

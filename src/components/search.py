@@ -32,7 +32,7 @@ import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 
 from src.components import market_estimate
-from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
+from src.components.feature_engineering import add_sale_features
 from src.components.predict import DEFAULT_FEATURE_SET, DEFAULT_MODEL_NAME, load_model
 from src.components.training import FEATURE_COLUMNS, FEATURE_SETS, NUMERIC_FEATURES, SALE_DERIVED_FEATURES
 from src.utils.common import read_dataframe_cached, resolve_path
@@ -219,9 +219,7 @@ def lookup_property(address=None, parcel_id=None, limit=5):
 
     match = match.head(limit)
     others = df[~df["parcel_id"].isin(match["parcel_id"])]
-    match = add_price_momentum(
-        add_neighborhood_aggregates(match.drop(columns=SALE_DERIVED_FEATURES), source=others), source=others
-    )
+    match = add_sale_features(match.drop(columns=SALE_DERIVED_FEATURES), source=others)
     results = match[PROPERTY_DISPLAY_COLUMNS]
     return results.astype(object).where(results.notna(), None).to_dict(orient="records")
 
