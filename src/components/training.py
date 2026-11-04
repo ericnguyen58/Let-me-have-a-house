@@ -56,7 +56,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from src.components import model_registry
-from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
+from src.components.feature_engineering import add_sale_features
 from src.utils.common import read_dataframe, resolve_path, save_dataframe
 from src.utils.load_config import load_config
 
@@ -131,11 +131,7 @@ def split_rows(df, training_cfg):
 
 def split_with_aggregates(df, training_cfg):
     train, test = split_rows(df, training_cfg)
-
-    def add(rows):
-        return add_price_momentum(add_neighborhood_aggregates(rows, source=train), source=train)
-
-    return add(train), add(test)
+    return add_sale_features(train, source=train), add_sale_features(test, source=train)
 
 
 def build_preprocessor(features):

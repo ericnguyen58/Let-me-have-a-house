@@ -136,7 +136,9 @@ def range_factors(sales, as_of, base="total_value"):
         & sales["neighborhood_code"].isin(ratios.index)
         & (sales["year_built"] < ASSESSMENT_YEAR)
     ]  # houses that get an estimate
-    misses = later["sale_price"] / (later[base] * later["neighborhood_code"].map(ratios["median"]))
+    # astype: with no such houses, pandas 3.1 maps the empty codes to an empty str column
+    ratio = later["neighborhood_code"].map(ratios["median"]).astype(float)
+    misses = later["sale_price"] / (later[base] * ratio)
     return tuple(misses.quantile(list(RANGE_QUANTILES)))
 
 
@@ -461,35 +463,37 @@ def _parcel_folds(parcel_ids, n_folds, seed=0):
     return pd.Series(np.random.default_rng(seed).integers(n_folds, size=len(uniques))[codes], index=parcel_ids.index)
 
 
-def _estimate_held_out(df, held_out, source, feature_folds):
+def _estimate_held_out(df, held_out, source, feature_folds, spec=None):
     """Model estimates for the `held_out` rows of `df` (load_training_data plus a row_id
-    column), from a model refit on the other rows with the last training run's best
-    settings. Sale-derived features come from `source`; for held-out rows each of
-    `feature_folds` folds also leaves out its own sales. Returns a Series by row_id."""
-    from src.components.feature_engineering import add_neighborhood_aggregates, add_price_momentum
+    column), from a model refit on the other rows. Sale-derived features come from
+    `source`; for held-out rows each of `feature_folds` folds also leaves out its own
+    sales. Returns a Series by row_id.
+
+    The model is `spec` ({"model", "params", "feature_set"}, see experiments/backtest.py),
+    by default the last training run's best model with its settings."""
+    from src.components.feature_engineering import add_sale_features
     from src.components.finetune import best_previous_model, build_model
     from src.components.training import FEATURE_SETS, TARGET, build_preprocessor
 
-    def with_aggregates(rows, src):
-        return add_price_momentum(add_neighborhood_aggregates(rows, source=src), source=src)
-
     cfg = load_config()
-    train = with_aggregates(df[~held_out], source)
+    if spec is None:
+        previous, params = best_previous_model(resolve_path(cfg, "reports"))
+        spec = {"model": previous["model"], "params": params, "feature_set": previous["feature_set"]}
+    train = add_sale_features(df[~held_out], source=source)
     fold = _parcel_folds(df.loc[held_out, "parcel_id"], feature_folds)
     scored = pd.concat(
         [
-            with_aggregates(df.loc[fold.index[fold == k]], source.drop(index=fold.index[fold == k]))
+            add_sale_features(df.loc[fold.index[fold == k]], source=source.drop(index=fold.index[fold == k]))
             for k in range(feature_folds)
         ]
     )
-    previous, params = best_previous_model(resolve_path(cfg, "reports"))
-    features = FEATURE_SETS[previous["feature_set"]]
+    features = FEATURE_SETS[spec["feature_set"]]
     print(
-        f"refitting {previous['feature_set']} {previous['model']} on {len(train):,} houses; {len(scored):,} held out",
+        f"refitting {spec['feature_set']} {spec['model']} on {len(train):,} houses; {len(scored):,} held out",
         flush=True,
     )
     preprocessor = build_preprocessor(features)
-    model = build_model(previous["model"], params, cfg["training"])
+    model = build_model(spec["model"], spec["params"], cfg["training"])
     model.fit(preprocessor.fit_transform(train[features]), np.log1p(train[TARGET]))
     preds = np.expm1(model.predict(preprocessor.transform(scored[features])))
     return pd.Series(preds, index=scored["row_id"].values)
@@ -503,9 +507,10 @@ def _training_rows():
     return df
 
 
-def model_estimates(sales, cutoff):
-    """The model's estimate of the 2023 assessed value for every house that sold from
-    RATIO_HISTORY_MONTHS before `cutoff` on, indexed like `sales`.
+def model_estimates(sales, cutoff, spec=None):
+    """The model's (`spec`'s, see _estimate_held_out) estimate of the 2023 assessed value
+    for every house that sold from RATIO_HISTORY_MONTHS before `cutoff` on, indexed like
+    `sales`.
 
     The model is refit on every other house, so it never saw these houses' assessed
     values. Sale-derived features use only sales before `cutoff`, and for these houses
@@ -516,7 +521,7 @@ def model_estimates(sales, cutoff):
     source = df.assign(price_per_sqft=df["price_per_sqft"].where(before_cutoff))
     start = cutoff - pd.DateOffset(months=RATIO_HISTORY_MONTHS)
     held_out = df["row_id"].isin(sales.index[sales["sale_date"] >= start])
-    return _estimate_held_out(df, held_out, source, FEATURE_FOLDS).reindex(sales.index)
+    return _estimate_held_out(df, held_out, source, FEATURE_FOLDS, spec).reindex(sales.index)
 
 
 def build_out_of_fold_estimates():
@@ -559,7 +564,7 @@ BACKTEST_CUTOFFS = [
 ]
 
 
-def chain_predictions(cutoff="2026-04-01", end=None, sales=None):
+def chain_predictions(cutoff="2026-04-01", end=None, sales=None, spec=None):
     """One row per sale from `cutoff` to `end` (default: today) with every method's
     estimate, its segment, and whether the sale fell inside each 80% range - with
     ratios, ranges, the Zillow factor and the model all built from data before `cutoff`.
@@ -567,11 +572,12 @@ def chain_predictions(cutoff="2026-04-01", end=None, sales=None):
     Methods: the county's assessed value or the model's estimate of it, times the
     neighborhood ratio of sale / assessed value, the ratio of sale / model estimate
     ("calibrated"), or Zillow's county factor; and the full chain - model x calibrated
-    ratio where the neighborhood has one, else model x Zillow."""
+    ratio where the neighborhood has one, else model x Zillow. `spec` is the model (see
+    _estimate_held_out)."""
     cutoff = pd.Timestamp(cutoff)
     end = pd.Timestamp(end or datetime.now())
     sales = load_sales(resolve_path(load_config(), "features_data")) if sales is None else sales.copy()
-    sales["model_estimate"] = model_estimates(sales, cutoff)
+    sales["model_estimate"] = model_estimates(sales, cutoff, spec)
     calibrated = sales.assign(ratio=sales["sale_price"] / sales["model_estimate"])
 
     ratio = neighborhood_ratios(sales, cutoff)["median"]
@@ -627,16 +633,17 @@ def chain_backtest(cutoff="2026-04-01", end=None):
     return score_chain(chain_predictions(cutoff, end))
 
 
-def multi_cutoff_backtest(cutoffs=BACKTEST_CUTOFFS, end=None):
+def multi_cutoff_backtest(cutoffs=BACKTEST_CUTOFFS, end=None, spec=None):
     """chain_predictions for each cutoff, each window ending the day before the next
     cutoff (the last one at `end`, default today), pooled. Returns (pooled scores, median
-    % error per cutoff, segment and method, per-sale predictions)."""
+    % error per cutoff, segment and method, per-sale predictions). `spec` is the model
+    refit at each cutoff (see _estimate_held_out)."""
     sales = load_sales(resolve_path(load_config(), "features_data"))
     ends = [pd.Timestamp(c) - pd.Timedelta(days=1) for c in cutoffs[1:]] + [end]
     windows = []
     for cutoff, window_end in zip(cutoffs, ends, strict=True):
         print(f"cutoff {cutoff}", flush=True)
-        windows.append(chain_predictions(cutoff, window_end, sales))
+        windows.append(chain_predictions(cutoff, window_end, sales, spec))
     predictions = pd.concat(windows)
     per_cutoff = pd.concat([score_chain(w).assign(cutoff=w["cutoff"].iloc[0]) for w in windows])
     by_cutoff = per_cutoff.pivot_table(index=["segment", "method"], columns="cutoff", values="median_pct_error")

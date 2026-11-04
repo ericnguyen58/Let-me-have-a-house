@@ -23,6 +23,7 @@ import pandas as pd
 from sklearn.neighbors import KNeighborsClassifier
 
 from src.utils.common import resolve_path, save_dataframe
+from src.utils.data_checks import check
 from src.utils.load_config import load_config
 
 COMMON_COLUMNS = [
@@ -206,13 +207,16 @@ NUMERIC_COLUMNS = [
 
 
 def load_mecklenburg(raw_path):
-    return pd.read_csv(
+    """The county export, checked against config/schema.yaml `county_raw` (a changed
+    export raises DataCheckError listing what moved)."""
+    df = pd.read_csv(
         raw_path + "merklenburg/Cama_Table_transformed.csv",
         sep=";",
         encoding="utf-8-sig",
         decimal=",",
         low_memory=False,
     )
+    return check(df, "county_raw")
 
 
 # def load_buncombe(raw_path):
