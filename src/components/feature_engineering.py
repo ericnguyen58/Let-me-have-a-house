@@ -434,6 +434,23 @@ def add_interactions(df):
     return df.drop(columns=["neighborhood_heated_area", "neighborhood_year_built"])
 
 
+def with_changes(house, changes):
+    """`house` (a lookup_property row) with `changes` to its own columns, and
+    add_interactions' columns rebuilt to match, so a bigger house is also bigger against its
+    neighborhood. The neighborhood's typical sold house, which add_interactions drops, comes
+    back from the unchanged house's ratios."""
+    row = pd.DataFrame([house])
+    numeric = ["heated_area", "relative_heated_area", "year_built", "relative_year_built", "acreage"]
+    numeric += ["neighborhood_adjusted_price_per_sqft"]
+    row[numeric] = row.reindex(columns=numeric).astype(float)  # None (lookup_property's NaN) to NaN
+    row["neighborhood_heated_area"] = row["heated_area"] / row["relative_heated_area"]
+    row["neighborhood_year_built"] = row["year_built"] - row["relative_year_built"]
+    for column, value in changes.items():
+        row[column] = value
+    row = add_interactions(row)
+    return {k: (None if pd.isna(v) else v) for k, v in row.iloc[0].items()}
+
+
 def add_sale_features(df, source=None):
     """Every feature computed from sales (training.SALE_DERIVED_FEATURES), from `source`
     rows (default: df itself), plus add_interactions' lot ratio. The one place they are

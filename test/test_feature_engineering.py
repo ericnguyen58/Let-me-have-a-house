@@ -11,6 +11,7 @@ from src.components.feature_engineering import (
     add_price_per_sqft,
     nearest_distance,
     school_scores,
+    with_changes,
 )
 
 
@@ -89,6 +90,34 @@ def test_interactions_compare_the_house_with_its_neighborhoods_sold_houses():
     assert out["relative_year_built"].tolist() == [10, -10]
     assert out["lot_sqft_per_heated_sqft"].iloc[0] == pytest.approx(7.26)
     assert np.isnan(out["lot_sqft_per_heated_sqft"].iloc[1])  # no heated area
+
+
+def test_a_changed_house_is_compared_with_the_same_neighborhood():
+    # the house above: 3,000 sq ft and built 2010, in a neighborhood of 1,500 sq ft houses from 2000
+    house = {
+        "area": "A",
+        "bedrooms": 4,
+        "heated_area": 3000,
+        "year_built": 2010,
+        "acreage": 0.5,
+        "neighborhood_adjusted_price_per_sqft": 200,
+        "neighborhood_value_estimate": 600_000,
+        "relative_heated_area": 2.0,
+        "relative_year_built": 10,
+        "lot_sqft_per_heated_sqft": 7.26,
+    }
+    out = with_changes(house, {"heated_area": 4500, "bedrooms": 5})
+    assert (out["heated_area"], out["bedrooms"], out["area"]) == (4500, 5, "A")
+    assert out["neighborhood_value_estimate"] == 900_000
+    assert out["relative_heated_area"] == 3
+    assert out["lot_sqft_per_heated_sqft"] == pytest.approx(4.84)
+    assert with_changes(house, {"year_built": 2020})["relative_year_built"] == 20
+    assert with_changes(house, {}) == pytest.approx(house)
+    # a neighborhood without sales (lookup_property gives None) stays without them
+    out = with_changes(
+        dict(house, neighborhood_adjusted_price_per_sqft=None, relative_heated_area=None), {"heated_area": 4500}
+    )
+    assert out["neighborhood_value_estimate"] is None and out["relative_heated_area"] is None
 
 
 def _sales(neighborhood, area, n, yearly_growth):
