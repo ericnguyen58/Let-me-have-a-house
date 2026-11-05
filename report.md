@@ -315,6 +315,9 @@ cutoff, and its test MAE is 5.8% lower.
   - Gradient boosting stays because `evaluating.py`'s analyses (sections 1 to 3) are built on it.
 - `predict.DEFAULT_MODEL_NAME` is `lightgbm`, so estimates, `find_deals` and the API use it.
 - `lightgbm` is a main dependency, and the Docker image adds the OpenMP runtime (`libgomp1`) its wheel needs.
+- A what-if rebuilds the new features made from the house's own size, age and lot
+  (`feature_engineering.with_changes`). Without that, a bigger house kept its old size against the neighborhood,
+  and LightGBM valued the Abbey Hill addition (+400 sq ft, +1 bedroom) at about $5,000 instead of $41,000.
 
 **Costs:**
 - One LightGBM fit takes about 7.5 minutes on 3 threads. Training adds 4 fits per feature set (3 CV folds and the
@@ -329,6 +332,10 @@ cutoff, and its test MAE is 5.8% lower.
 2. `uv run python -m src.components.training`. The run is promoted if it is no worse than production.
 3. `uv run python -m src.components.market_estimate calibrate`, so the neighborhood ratios match the new model.
 4. Then deploy the new image. The current production run has no LightGBM model, so estimates fail until step 2.
+
+Steps 1 to 3 were run locally on November 5, 2026. The new run, `2026-11-05_110637`, was promoted, and its LightGBM
+model's test MAE is $27,714, the experiment's to the dollar. Its gradient boosting models also improved with the new
+features: −1.5% and −2.9% MAE against the previous production run, on the 60,260 test houses both held out.
 
 **Next steps:**
 - Larger gains are more likely to come from the chain's ratio step, where most of its error is, than from the model.
