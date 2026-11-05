@@ -18,6 +18,8 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --locked --no-default-groups
 
 FROM python:3.14-slim-trixie@sha256:cd89c30eda26ee911a4611b18680086e0ea42e6f5f8cbe653d07fa7958c9cec8
+# LightGBM's wheel links to the system OpenMP runtime, which the slim image doesn't have
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 app
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv

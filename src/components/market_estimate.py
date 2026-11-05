@@ -371,9 +371,12 @@ def what_if(house, changes, as_of=None):
     """market_value for `house` with `changes` applied (e.g. {"bedrooms": 5}) and no county
     value, since that doesn't reflect the change. `change_vs_unchanged` compares it with
     the same house, unchanged, through the same model, so it is what the change alone is
-    worth."""
+    worth. Features built from the changed columns (size against the neighborhood's, for
+    one) are rebuilt to match."""
+    from src.components.feature_engineering import with_changes
+
     unchanged = market_value(dict(house, total_value=None), as_of)
-    result = market_value(dict(house, total_value=None, **changes), as_of)
+    result = market_value(dict(with_changes(house, changes), total_value=None), as_of)
     result["change_vs_unchanged"] = round(result["market_estimate"] - unchanged["market_estimate"], 2)
     return result
 

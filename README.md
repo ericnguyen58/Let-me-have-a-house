@@ -73,14 +73,18 @@ as described below.
 | Pipeline orchestration | `src/pipeline/run.py` | Implemented: runs the stages in order, skipping those that are up to date |
 | Chat UI v1.0 | `api/main.py`, `api/static/index.html` | Implemented: a web page for the assistant |
 | Docker | `Dockerfile` | Implemented: an image of the chat API |
-| Tests | `test/` | Implemented: 105 tests, 7 of them on the local data |
+| Tests | `test/` | Implemented: 110 tests, 7 of them on the local data |
 | CI/CD | `.github/workflows/ci.yml` | Implemented: lint, format check and tests on every push and pull request; the Docker image is pushed to GitHub's registry from `main` |
 
 ## Current models
 
-Only histogram gradient boosting (scikit-learn's
-`HistGradientBoostingRegressor`) is in use for now (`training.MODEL_TYPES`).
-Models are chosen by MAE in dollars: the aim is a smaller typical miss, even
+Two model types are in use (`training.MODEL_TYPES`): LightGBM, which
+estimates come from (`predict.DEFAULT_MODEL_NAME`), and histogram gradient
+boosting (scikit-learn's `HistGradientBoostingRegressor`), which the analyses
+in `evaluating.py` are built on. LightGBM's settings are fixed at the ones
+adopted in the model experiments (report.md section 4); with the features
+added then, they lowered the market estimate's backtest MAE by 1.8% and test
+MAE by 5.8%. Models are chosen by MAE in dollars: the aim is a smaller typical miss, even
 if RMSE or R squared had to give a little. In a comparison on a validation
 split carved from the training rows, gradient boosting beat the tuned random
 forest on every metric anyway (MAE $29,407 against $33,066), and its model
@@ -88,17 +92,20 @@ files are 45 to 70 MB instead of about 1.1 GB. The random forest and XGBoost
 setups are kept in `training.py` and can be switched back on (XGBoost is an
 optional dependency: `uv sync --group xgboost`).
 
-Both models come from the latest full training run (November 1, 2026, about
-20 minutes), now the production run `2026-11-01_155733` in
-`output/models/runs/` (see `model_registry.py`). It uses all 27 features, including the school, crime, flood and
-light rail features, and the about 9,200 golf, waterfront and high-rise homes
+All four models come from the latest full training run (November 5, 2026),
+now the production run `2026-11-05_110637` in `output/models/runs/` (see
+`model_registry.py`). It uses all 33 features, including the school, crime,
+flood and light rail features and the 6 added in the model experiments, and
+the about 9,200 golf, waterfront and high-rise homes
 that were added back (see `data_preprocessing.py`). Market sales are the ones
 the county marked "Qualified".
 
 | Model | Test set (about 61,000 houses) |
 |---|---|
-| `with_neighborhood_price_hist_gradient_boosting` (default) | RMSE $80,283, MAE $29,439, R squared 0.956, average error 5.04% |
-| `without_neighborhood_price_hist_gradient_boosting` | RMSE $83,464, MAE $29,969, R squared 0.953, average error 5.12% |
+| `with_neighborhood_price_lightgbm` (default) | RMSE $75,286, MAE $27,714, R squared 0.962, average error 4.74% |
+| `without_neighborhood_price_lightgbm` | RMSE $76,344, MAE $27,877, R squared 0.961, average error 4.75% |
+| `with_neighborhood_price_hist_gradient_boosting` (the analyses in `evaluating.py`) | RMSE $79,200, MAE $29,006, R squared 0.958, average error 4.96% |
+| `without_neighborhood_price_hist_gradient_boosting` | RMSE $80,055, MAE $29,036, R squared 0.957, average error 4.95% |
 | `*_random_forest` (in `output/models/`, from before runs were kept) | Previous models, not used, scored on the earlier test split (see below). RMSE $86,183, MAE $32,826, R squared 0.950, average error 5.71% (default feature set); $88,283, $34,435, 0.948, 6.00% (without neighborhood price). Their metrics and settings are kept in `reports/random_forest_run/`. |
 | `*_xgboost` (in `output/models/`) | Not used, and no longer fit the current preprocessors. |
 
@@ -107,36 +114,46 @@ gradient boosting ones were copied into the production run when runs started
 being kept, and the random forest and XGBoost ones are from earlier runs.
 They can be deleted (about 2.2 GB).
 
-This run removed 6 houses with impossible bedroom counts (see
-`data_preprocessing.py`), which redrew the random 80/20 split, so the test set
-is a different 61,000 houses. The settings came out the same, and MAE barely
-moved ($29,614 to $29,439 for the default model). RMSE rose ($76,440 to
-$80,283; $75,598 to $83,464 without neighborhood price) because it follows
-the largest misses, and the new test set holds a few that dominate it: the
-largest is a $10.9 million property estimated at about $4.9 million. Without
-its 20 largest misses, RMSE would be about $70,000.
+On the 60,260 test houses that both this run and the previous production run
+(`2026-11-01_155733`, gradient boosting only) held out, the new features
+lowered gradient boosting's MAE by 1.5% (default feature set) and 2.9%
+(without neighborhood price).
+
+The November 1 run removed 6 houses with impossible bedroom counts (see
+`data_preprocessing.py`), which redrew the random 80/20 split, so its test
+set was a different 61,000 houses. MAE barely moved ($29,614 to $29,439 for
+the default model). RMSE rose ($76,440 to $80,283; $75,598 to $83,464
+without neighborhood price) because it follows the largest misses, and the
+new test set holds a few that dominate it: the largest is a $10.9 million
+property estimated at about $4.9 million. Without its 20 largest misses,
+RMSE would have been about $70,000.
 
 On the earlier split's test set, the switch from random forest lowered MAE by
 9.8% (default) and 13.5% (without neighborhood price). With gradient boosting
-the two feature sets are almost equally accurate, so the neighborhood price
-column adds little once the other location features are in.
+or LightGBM the two feature sets are almost equally accurate, so the
+neighborhood price column adds little once the other location features are in.
 
-The best settings for both feature sets: `learning_rate` 0.05,
-`max_leaf_nodes` 255, `min_samples_leaf` 10, `max_features` 0.5,
-`l2_regularization` 0.1. Early stopping chose 2,335 trees (default) and
-2,088 trees (without neighborhood price).
+LightGBM's settings are fixed (`training.LIGHTGBM_PARAM_DISTRIBUTIONS`). The
+best gradient boosting settings: `learning_rate` 0.05, `max_features` 0.5
+and `l2_regularization` 0.1 for both feature sets; `max_leaf_nodes` 127 and
+`min_samples_leaf` 5 (default), 255 and 10 (without neighborhood price).
+Early stopping chose 3,000 trees, the most it allows (default), and 1,941
+(without neighborhood price).
 
 **Test houses** (held out of training; `evaluating.validate_houses` with
 their parcel IDs):
 
-| House | Assessed | Default model | Without neighborhood price |
-|---|---|---|---|
-| 4817 Kelly Woods Ln | $1,191,900 | $1,257,016 (+5.5%) | $1,377,399 (+15.6%) |
-| 3612 Abbey Hill Ln | $612,600 | $613,851 (+0.2%) | $607,038 (−0.9%) |
+| House | Assessed | Default model (LightGBM) | Without neighborhood price | Gradient boosting, default feature set |
+|---|---|---|---|---|
+| 4817 Kelly Woods Ln | $1,191,900 | $1,240,398 (+4.1%) | $1,224,089 (+2.7%) | $1,180,555 (−1.0%) |
+| 3612 Abbey Hill Ln | $612,600 | $618,263 (+0.9%) | $618,549 (+1.0%) | $614,562 (+0.3%) |
 
-The random forest had +5.5% and +1.2% on these two. Two houses are too few to
-judge by; on the 10-house check (`reports/validation_houses.csv`) the default
-model's mean error is 4.6%, and 5.5% without the neighborhood price.
+The November 1 gradient boosting model had +5.5% and +0.2% on these two, and
+the random forest +5.5% and +1.2%. Two houses are too few to judge by, and so
+are ten: on the 10-house check (`reports/validation_houses.csv`) LightGBM's
+mean error is 4.7% with or without the neighborhood price, and gradient
+boosting's 4.4% and 4.5%, the other way round from the 61,000-house test set
+above.
 
 `predict.py` and the assistant give slightly different numbers for the same
 houses ($1,194,070 and $599,376 with the default model). `lookup_property`
@@ -170,7 +187,7 @@ feature_engineering.py
         |
         v
 training.py
-  2 feature sets x gradient boosting -> output/models/runs/<run_id>/ (models, metrics, run.json)
+  2 feature sets x (gradient boosting, LightGBM) -> output/models/runs/<run_id>/ (models, metrics, run.json)
   check against production           -> if no worse: output/models/production.json,
                                         reports/training_metrics.csv,
                                         reports/best_hyperparameters.json
@@ -248,20 +265,22 @@ uv run python -m src.components.assistant "your question here"
 uv run python -m src.components.assistant             # multi-turn chat
 uv run python -m api.main                             # chat UI v1.0 at http://127.0.0.1:8000
 uv run python -m src.components.market_estimate       # backtest today's-price methods
-uv run python -m src.components.market_estimate calibrate    # out-of-fold model estimates for market_value (about 15 minutes)
+uv run python -m src.components.market_estimate calibrate    # out-of-fold model estimates for market_value (about 30 minutes)
 uv run python -m src.components.market_estimate houses       # market_value for the test houses, two per path
-uv run python -m src.components.market_estimate chain        # backtest the model chain at one cutoff (about 3 minutes)
-uv run python -m src.components.market_estimate chain-multi  # the same at 9 quarterly cutoffs (about 26 minutes)
+uv run python -m src.components.market_estimate chain        # backtest the model chain at one cutoff (about 8 minutes)
+uv run python -m src.components.market_estimate chain-multi  # the same at 9 quarterly cutoffs (about 75 minutes)
 uv run python -m experiments.backtest run NAME --spec JSON   # score a model change against experiments/baseline.json (report.md section 4)
 uv run python -m experiments.backtest compare                # the leaderboard of every logged experiment
 ```
 
 Each stage reads its inputs from the previous stage's output files, so they
 must be run in order the first time. Preprocessing and feature engineering
-each take about 20 seconds. Training takes much longer (about 20 minutes), because it runs a
+each take under a minute. Training takes much longer (about 20 minutes before LightGBM), because it runs a
 hyperparameter search for 2 gradient boosting models on about 304,000 houses.
-`finetune.py`, which retrains one model with known settings, takes about 2.5
-minutes.
+LightGBM adds 4 fits per feature set (3 CV folds and the refit) of about 7.5
+minutes each on 3 threads.
+`finetune.py`, which retrains one model with known settings, takes about 7.5
+minutes now that the best model is LightGBM (2.5 with gradient boosting).
 
 ## Configuration
 
@@ -645,8 +664,10 @@ Trains models that estimate `total_value` (the 2023 assessed value).
 | `with_neighborhood_price` | The best estimate. Includes `neighborhood_median_price_per_sqft`. |
 | `without_neighborhood_price` | The same features without that column. The neighborhood price already contains most of the effect of location, amenities and area, so this is the model to read when asking what `area` and the accessibility features are worth. |
 
-Each set is trained with every model type in `MODEL_TYPES`. That is only
-`hist_gradient_boosting` for now, so 2 models are trained.
+Each set is trained with every model type in `MODEL_TYPES`:
+`hist_gradient_boosting` and `lightgbm`, so 4 models are trained. LightGBM's
+settings (`LIGHTGBM_PARAM_DISTRIBUTIONS`) are a single candidate, the one
+adopted in the model experiments, so its search only scores it.
 `build_search_estimators` also defines random forest and XGBoost, which come
 back by adding `"random_forest"` or `"xgboost"` to `MODEL_TYPES`. It builds only
 the types asked for, and imports XGBoost only then: XGBoost is an optional
@@ -709,8 +730,9 @@ sales. Their neighborhood price is filled with the median.
   model, and if it does, copies its two reports to `reports/`.
 
 Models trained before `price_momentum` was added still load, but they ignore
-the column. Retrain to use it. Each gradient boosting file is 45 to 70 MB;
-the old random forest files are about 1.1 GB each.
+the column. Retrain to use it. Each gradient boosting file is 45 to 70 MB,
+each LightGBM file about 210 MB; the old random forest files are about 1.1 GB
+each.
 
 ### `model_registry.py`
 
@@ -798,7 +820,7 @@ light_rail. The drop-column test, the same-house test and
 
 **Drop-column test (implemented, one split).**
 `drop_column_test(feature_set)`:
-- Retrains the production gradient boosting model (settings from
+- Retrains the production gradient boosting model, which these analyses stay on (settings from
   `reports/best_hyperparameters.json`, early stopping as in training)
   without one group at a time, and without `area`, `places_count` and
   `health_care_share` alone. Each is scored on the full test set.
@@ -887,7 +909,7 @@ validates it. Use it after adding a feature, instead of a full training run.
 
 Estimates `total_value` for one house.
 
-- `predict_total_value(features, feature_set="with_neighborhood_price", model_name="hist_gradient_boosting")`:
+- `predict_total_value(features, feature_set="with_neighborhood_price", model_name="lightgbm")`:
   `features` is a dictionary of feature names to values. It returns the
   estimate in dollars.
 - Any feature not given is filled the same way as in training (median or most
@@ -897,8 +919,8 @@ Estimates `total_value` for one house.
 - `feature_set` chooses between the two trained feature sets.
   `with_neighborhood_price` is the default, because it is the one meant for
   estimates. An unknown name raises `ValueError`.
-- `model_name` must be a type in `training.MODEL_TYPES` (only
-  `hist_gradient_boosting` for now); anything else raises `ValueError`.
+- `model_name` must be a type in `training.MODEL_TYPES` (`lightgbm`, the
+  default, or `hist_gradient_boosting`); anything else raises `ValueError`.
 - `load_model(feature_set, model_name)` returns the preprocessor and model.
   `load_artifact` caches loaded files, so repeated calls do not reload from
   disk. `search.py` uses the same cache.
@@ -978,7 +1000,7 @@ Mecklenburg.
     priced low: houses on Kistler Farm Rd in Davidson came out at 6,700 sq ft
     for $462k. About 0.6% of houses are left out. There is no
     price-per-sq-ft sort for the same reason.
-- `find_deals(model_name="hist_gradient_boosting", feature_set="with_neighborhood_price", top_n=10, min_sale_price=10000, area=None)`:
+- `find_deals(model_name="lightgbm", feature_set="with_neighborhood_price", top_n=10, min_sale_price=10000, area=None)`:
   despite the name, this does not find houses for sale. It finds past
   arms-length sales that were well below the model's estimate, ranked by
   `deal_score = (predicted_value - sale_price) / predicted_value`. `area`
@@ -1491,25 +1513,28 @@ the model's training data, which probably teaches it to value new houses low.
 **Test houses** (`market_test_houses` in `config/config.yaml`, two per path;
 `uv run python -m src.components.market_estimate houses` reruns them, flags any
 house whose path no longer matches its `expect`, and saves
-`reports/market_test_houses.csv`). As of November 1, 2026:
+`reports/market_test_houses.csv`). As of November 5, 2026:
 
 | Group | House | Starting value | Ratio | Market estimate | 80% range |
 |---|---|---|---|---|---|
-| Built before 2023 | 4817 Kelly Woods Ln | $1,191,900 (county) | 1.284, neighborhood (3 sales) | $1,529,788 | $1,375,766 to $1,821,142 |
-| Built before 2023 | 3612 Abbey Hill Ln | $612,600 (county) | 1.421, neighborhood (4 sales) | $870,545 | $782,897 to $1,036,343 |
-| Built 2023 or later | 333 Cranford Dr, Pineville (2024) | $411,800 (county; full assessment) | 1.085, neighborhood (8 sales) | $446,809 | $401,823 to $531,905 |
-| Built 2023 or later | 5204 Mint Harbor Wy (2025) | $601,626 (model; county value $336,500 is 56% of it) | 1.599, neighborhood vs model (42 sales) | $961,904 | $844,363 to $1,133,111 |
-| No neighborhood ratio | 12020 Jumper Dr, Mint Hill | $609,200 (county) | 1.053, 60-month adjusted (3 sales) | $641,311 | $569,951 to $855,027 |
-| No neighborhood ratio | 7916 Pebbleridge Dr | $344,700 (county) | 1.160, area (344 sales) | $399,833 | $355,342 to $533,076 |
-| What-if | Abbey Hill, +1 bedroom, +400 sq ft | $660,757 (model) | 1.417, neighborhood vs model | $936,385 (+$86,985) | $821,962 to $1,103,049 |
-| What-if | Kelly Woods, +1 bathroom | $1,233,908 (model) | 1.246, neighborhood vs model | $1,537,253 (+$49,633) | $1,349,406 to $1,810,864 |
+| Built before 2023 | 4817 Kelly Woods Ln | $1,191,900 (county) | 1.284, neighborhood (3 sales) | $1,529,788 | $1,372,700 to $1,822,599 |
+| Built before 2023 | 3612 Abbey Hill Ln | $612,600 (county) | 1.421, neighborhood (4 sales) | $870,545 | $781,152 to $1,037,172 |
+| Built 2023 or later | 333 Cranford Dr, Pineville (2024) | $411,800 (county; full assessment) | 1.085, neighborhood (8 sales) | $446,809 | $400,928 to $532,331 |
+| Built 2023 or later | 5204 Mint Harbor Wy (2025) | $577,591 (model; county value $336,500 is 58% of it) | 1.559, neighborhood vs model (41 sales) | $900,441 | $788,199 to $1,052,778 |
+| No neighborhood ratio | 12020 Jumper Dr, Mint Hill | $609,200 (county) | 1.097, 60-month adjusted (2 sales) | $668,032 | $601,057 to $899,049 |
+| No neighborhood ratio | 7916 Pebbleridge Dr | $344,700 (county) | 1.163, area (340 sales) | $400,759 | $360,580 to $539,348 |
+| What-if | Abbey Hill, +1 bedroom, +400 sq ft | $652,370 (model) | 1.436, neighborhood vs model | $936,736 (+$58,412) | $819,969 to $1,095,213 |
+| What-if | Kelly Woods, +1 bathroom | $1,263,393 (model) | 1.240, neighborhood vs model | $1,566,713 (+$46,447) | $1,371,418 to $1,831,770 |
 
 A what-if's change in brackets compares it with the same house, unchanged,
-through the same model; it is what the change alone is worth. It moves a lot
-between training runs: on the models before the November 1 rebuild, the same
-two changes were worth +$108,274 and +$5,446. Treat a single what-if as a
-rough figure. Mint Harbor's
-1.599 is high because the model's estimates for new houses run low (see
+through the same model; it is what the change alone is worth. The features
+built from a changed column, such as the house's size against its
+neighborhood's, are rebuilt to match (`feature_engineering.with_changes`);
+left as they were, LightGBM valued the 400 sq ft at about $5,000. It moves a
+lot between training runs: on the November 1 gradient boosting models the
+same two changes were worth +$86,985 and +$49,633, and before that rebuild
++$108,274 and +$5,446. Treat a single what-if as a rough figure. Mint Harbor's
+1.559 is high because the model's estimates for new houses run low (see
 above), and the ratio against the model's estimate makes up for it.
 
 ## src/pipeline
@@ -1706,7 +1731,8 @@ docker run --rm -p 8000:8000 \
 `OLLAMA_URL` points the assistant at Ollama on the host; for Claude, pass
 `-e ASSISTANT_MODEL=... -e ANTHROPIC_API_KEY=...` instead (`.env` isn't
 copied into the image). The health check requests `/`. The image is about
-1.2 GB; XGBoost, which isn't in use, is left out.
+1.2 GB; it includes LightGBM and the OpenMP runtime its wheel needs
+(`libgomp1`), and leaves out XGBoost, which isn't in use.
 
 ## Known issues
 

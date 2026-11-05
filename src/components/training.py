@@ -1,12 +1,16 @@
 """Train gradient boosting regressors for `total_value` (Mecklenburg).
 
 Reads data/features/properties_features.csv and trains each model type in
-MODEL_TYPES on two feature sets. Only histogram gradient boosting is enabled for now -
-on a validation split carved from the training rows it beat the tuned random forest
-on every metric (MAE $29,407 vs $33,066, RMSE $78,464 vs $88,876), and its saved
-models are a few MB instead of over 1GB - so 2 models are trained. The random forest
-and xgboost setups are kept in build_search_estimators and can be switched back on by
-adding them to MODEL_TYPES (xgboost after `uv sync --group xgboost`).
+MODEL_TYPES on two feature sets, so 4 models are trained:
+- lightgbm, the one served (predict.DEFAULT_MODEL_NAME), with fixed settings from the
+  model experiments (report.md section 4): with the features below it lowered the market
+  estimate's backtest MAE by 1.8% averaged over 3 seeds, and test MAE by 5.8%.
+- hist_gradient_boosting, which evaluating.py's analyses are built on. On a validation
+  split carved from the training rows it beat the tuned random forest on every metric
+  (MAE $29,407 vs $33,066, RMSE $78,464 vs $88,876), and its saved models are a few MB
+  instead of over 1GB.
+The random forest and xgboost setups are kept in build_search_estimators and can be
+switched on by adding them to MODEL_TYPES (xgboost after `uv sync --group xgboost`).
 
 - with_neighborhood_price: every feature, including neighborhood_median_price_per_sqft
 - without_neighborhood_price: the same minus that column. The neighborhood price
@@ -16,9 +20,9 @@ adding them to MODEL_TYPES (xgboost after `uv sync --group xgboost`).
 
 The split is random (80/20), not grouped by neighborhood: the use case is valuing a
 house in a neighborhood that already has sales, and with a neighborhood-grouped split
-every test house would be missing its neighborhood aggregates. Those aggregates and
-price_momentum are recomputed here from training rows only, so a test house's own
-sale never feeds its features.
+every test house would be missing its neighborhood aggregates. Those aggregates,
+price_momentum and the other features from sales (SALE_DERIVED_FEATURES) are recomputed
+here from training rows only, so a test house's own sale never feeds its features.
 
 `land_value`/`building_value` and sale-derived columns are dropped as target leakage
 (total_value is exactly land_value + building_value) or near-entirely missing.
@@ -62,9 +66,20 @@ from src.utils.load_config import load_config
 
 TARGET = "total_value"
 NEIGHBORHOOD_PRICE = "neighborhood_median_price_per_sqft"
-# Features built from sale prices - dropped from the feature file and recomputed from
-# training rows only, so a test house's own sale never feeds its features.
-SALE_DERIVED_FEATURES = [NEIGHBORHOOD_PRICE, "neighborhood_sale_count", "price_momentum"]
+# Features built from sales - dropped from the feature file and recomputed from training
+# rows only, so a test house's own sale never feeds its features. lot_sqft_per_heated_sqft
+# is also built by add_sale_features, so a feature file from before it still works, but
+# from the house's own columns only.
+SALE_DERIVED_FEATURES = [
+    NEIGHBORHOOD_PRICE,
+    "neighborhood_sale_count",
+    "price_momentum",
+    "neighborhood_adjusted_price_per_sqft",
+    "neighborhood_sale_years",
+    "neighborhood_value_estimate",
+    "relative_heated_area",
+    "relative_year_built",
+]
 
 CATEGORICAL_FEATURES = ["land_use_class", "area"]
 NUMERIC_FEATURES = [
@@ -93,6 +108,12 @@ NUMERIC_FEATURES = [
     "property_crime_rate",
     "in_floodplain",
     "light_rail_miles",
+    "neighborhood_adjusted_price_per_sqft",
+    "neighborhood_sale_years",
+    "neighborhood_value_estimate",
+    "relative_heated_area",
+    "relative_year_built",
+    "lot_sqft_per_heated_sqft",
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 FEATURE_SETS = {
@@ -102,17 +123,19 @@ FEATURE_SETS = {
 # Model types trained, validated and served. "random_forest" and "xgboost" are also
 # available (see build_search_estimators) but left out for now; xgboost also needs
 # `uv sync --group xgboost`.
-MODEL_TYPES = ["hist_gradient_boosting"]
+MODEL_TYPES = ["hist_gradient_boosting", "lightgbm"]
 # The metric model selection optimizes, here and in finetune.py.
 SELECTION_METRIC = "mae"
 
 
 def load_training_data(features_path):
     """Rows with a positive target. The feature file's sale-derived features are
-    dropped - they were computed on every row, so split_with_aggregates recomputes them."""
+    dropped - they were computed on every row, so split_with_aggregates recomputes them.
+    A file built before a feature was added doesn't have it, which is fine: it is computed
+    here too."""
     df = read_dataframe(features_path, "properties_features.csv")
     df = df[df[TARGET].notna() & (df[TARGET] > 0)]
-    return df.drop(columns=SALE_DERIVED_FEATURES)
+    return df.drop(columns=SALE_DERIVED_FEATURES, errors="ignore")
 
 
 def test_address_parcels():
@@ -194,12 +217,28 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
     "subsample": [0.7, 0.8, 0.9, 1.0],
     "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
 }
+# Not searched: the settings accepted in the model experiments (report.md section 4,
+# experiments/exp-combined.jsonl), so the search runs this one candidate (its CV score is
+# still reported). A fixed number of rounds instead of early stopping: LightGBM's
+# scikit-learn API only stops early on an eval set passed to fit, which neither the search
+# nor the backtest does. One fit takes about 7.5 minutes on 3 threads.
+LIGHTGBM_PARAM_DISTRIBUTIONS = {
+    "n_estimators": [8000],
+    "learning_rate": [0.025],
+    "num_leaves": [255],
+    "min_child_samples": [10],
+    "feature_fraction_bynode": [0.5],
+    "reg_lambda": [0.1],
+    "max_bin": [4095],
+    "subsample": [0.8],
+}
 
 
 def build_search_estimators(random_state, training_cfg, model_types=MODEL_TYPES):
-    """A hyperparameter search for each of `model_types`. xgboost is imported only when it
-    is asked for: it is an optional dependency (`uv sync --group xgboost`), left out of the
-    default install and the Docker image while it isn't in MODEL_TYPES."""
+    """A hyperparameter search for each of `model_types`. xgboost and lightgbm are imported
+    only when they are asked for; xgboost is an optional dependency (`uv sync --group
+    xgboost`), left out of the default install and the Docker image while it isn't in
+    MODEL_TYPES."""
     # n_jobs=1 on each base estimator, n_jobs=-1 on the search itself: parallelizes across
     # search candidates/CV folds (separate worker processes) instead of nesting parallelism
     # inside each fit. Also required for xgboost specifically - on this xgboost 3.4.1 /
@@ -221,6 +260,15 @@ def build_search_estimators(random_state, training_cfg, model_types=MODEL_TYPES)
 
         return XGBRegressor(random_state=random_state, n_jobs=1, tree_method="approx"), XGBOOST_PARAM_DISTRIBUTIONS
 
+    def lightgbm():
+        from lightgbm import LGBMRegressor
+
+        # n_jobs=0 leaves the thread count to OpenMP, like hist_gradient_boosting (joblib
+        # limits it per search worker); LightGBM's default, None, takes every core.
+        # subsample_freq=1 makes subsample (bagging) apply at every round.
+        model = LGBMRegressor(random_state=random_state, n_jobs=0, subsample_freq=1, verbose=-1)
+        return model, LIGHTGBM_PARAM_DISTRIBUTIONS
+
     estimators = {
         # no n_jobs: it uses OpenMP threads, which joblib limits per search worker
         "hist_gradient_boosting": lambda: (
@@ -238,6 +286,7 @@ def build_search_estimators(random_state, training_cfg, model_types=MODEL_TYPES)
             RANDOM_FOREST_PARAM_DISTRIBUTIONS,
         ),
         "xgboost": xgboost,
+        "lightgbm": lightgbm,
     }
     return {name: RandomizedSearchCV(*estimators[name](), **search_kwargs) for name in model_types}
 

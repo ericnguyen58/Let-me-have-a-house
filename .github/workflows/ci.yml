@@ -77,7 +77,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke test
-        run: docker run --rm "${{ fromJSON(steps.meta.outputs.json).tags[0] }}" python -c "import api.main"
+        run: docker run --rm "${{ fromJSON(steps.meta.outputs.json).tags[0] }}" python -c "import api.main, lightgbm"
       - name: Log in to GitHub Container Registry
         if: github.event_name == 'push'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
